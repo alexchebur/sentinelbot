@@ -76,6 +76,7 @@ async def kick_user_callback(context: ContextTypes.DEFAULT_TYPE):
             chat_id=chat_id,
             user_id=user_id,
             until_date=datetime.now() + timedelta(seconds=30)
+        )
         
         await context.bot.unban_chat_member(chat_id=chat_id, user_id=user_id)
         await context.bot.send_message(
