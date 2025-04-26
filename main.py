@@ -159,12 +159,13 @@ async def execute_kick(user_id: int, context: ContextTypes.DEFAULT_TYPE, reason:
         await delete_message_safe(user_data["chat_id"], user_data["instructions_msg"], context)
         
         # Кик пользователя
-        await context.bot.ban_chat_member(
+        await context.bot.ban_chat_member(  # <-- Исправлено здесь
             chat_id=user_data["chat_id"],
             user_id=user_id,
             until_date=datetime.now() + timedelta(seconds=30)
-        logger.info(f"Пользователь {user_id} забанен")
-        )
+        )  # Закрывающая скобка добавлена
+        
+        logger.info(f"Пользователь {user_id} забанен")  # Теперь это отдельная строка
         
         # Уведомление
         notification = await context.bot.send_message(
@@ -183,7 +184,6 @@ async def execute_kick(user_id: int, context: ContextTypes.DEFAULT_TYPE, reason:
         if user_id in pending_verification:
             del pending_verification[user_id]
             logger.info(f"Пользователь {user_id} удален из очереди")
-
 def main():
     application = Application.builder().token("7931308034:AAGoN08BoCi4eQl7fI-KFbgIvMYRwsVITAE").build()
     
