@@ -12,26 +12,28 @@ from telegram.ext import (
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO,
+    level=logging.DEBUG,  # Включен режим отладки
     filename='bot.log'
 )
 logger = logging.getLogger(__name__)
 
-PASSWORD = "SECRET123"  # Замените на ваш пароль
-MAX_ATTEMPTS = 3        # Максимальное количество попыток
+PASSWORD = "SECRET123"
+MAX_ATTEMPTS = 3
 pending_verification = {}
 
 async def delete_message_safe(chat_id: int, message_id: int, context: ContextTypes.DEFAULT_TYPE):
-    """Безопасное удаление сообщения с обработкой ошибок"""
+    """Безопасное удаление сообщения"""
     try:
         await context.bot.delete_message(chat_id, message_id)
+        logger.debug(f"Сообщение {message_id} удалено")
     except Exception as e:
         logger.error(f"Ошибка удаления сообщения {message_id}: {e}")
 
 async def welcome_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка новых участников группы"""
+    """Обработка новых участников"""
     try:
-        await update.message.delete()  # Удаляем системное сообщение
+        logger.debug("Новый пользователь обнаружен")
+        await update.message.delete()
         
         for user in update.message.new_chat_members:
             if user.is_bot:
@@ -40,20 +42,21 @@ async def welcome_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE)
             user_id = user.id
             chat_id = update.effective_chat.id
             
-            # Отправка временной инструкции
+            # Отправка инструкции
             instructions = await update.effective_chat.send_message(
-                f"👋 {user.mention_markdown()}, отправьте кодовое слово в чат в течение 60 секунд!",
+                f"👋 {user.mention_markdown()}, у вас 60 секунд для ввода кода!",
                 parse_mode="Markdown"
             )
+            logger.debug(f"Инструкция отправлена: {instructions.message_id}")
             
-            # Настройка задания на удаление инструкции
+            # Задание на удаление инструкции
             context.job_queue.run_once(
                 lambda ctx: delete_message_safe(chat_id, instructions.message_id, ctx),
                 15,
-                data=instructions.message_id
+                name=f"del_instr_{user_id}"
             )
 
-            # Регистрация пользователя
+            # Регистрация задания на кик
             job = context.job_queue.run_once(
                 kick_user_callback,
                 60,
@@ -68,33 +71,36 @@ async def welcome_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 "messages": [],
                 "attempts": 0
             }
+            logger.info(f"Пользователь {user_id} зарегистрирован")
 
     except Exception as e:
         logger.error(f"Ошибка в welcome_new_member: {e}")
 
 async def handle_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка сообщений от новых пользователей"""
+    """Обработка сообщений"""
     user_id = update.effective_user.id
+    logger.debug(f"Получено сообщение от {user_id}")
+    
     if user_id not in pending_verification:
+        logger.debug("Пользователь не в списке проверки")
         return
 
     try:
         user_data = pending_verification[user_id]
         user_data["attempts"] += 1
+        logger.debug(f"Попытка {user_data['attempts']}/{MAX_ATTEMPTS}")
         
-        # Удаление сообщения пользователя
+        # Удаление сообщения
         await delete_message_safe(update.effective_chat.id, update.message.message_id, context)
         user_data["messages"].append(update.message.message_id)
 
-        # Проверка кодового слова
+        # Проверка пароля
         if update.message.text and update.message.text.strip() == PASSWORD:
-            # Успешная верификация
+            logger.info(f"Пользователь {user_id} ввел верный пароль")
             user_data["job"].schedule_removal()
-            
-            # Удаление инструкции
             await delete_message_safe(user_data["chat_id"], user_data["instructions_msg"], context)
             
-            # Временное подтверждение
+            # Отправка подтверждения
             confirmation = await update.effective_chat.send_message(
                 f"✅ {update.effective_user.mention_markdown()} верифицирован!",
                 parse_mode="Markdown"
@@ -102,42 +108,49 @@ async def handle_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             context.job_queue.run_once(
                 lambda ctx: delete_message_safe(confirmation.chat.id, confirmation.message_id, ctx),
                 10,
-                data=confirmation.message_id
+                name=f"del_conf_{user_id}"
             )
             
             del pending_verification[user_id]
-        elif user_data["attempts"] >= MAX_ATTEMPTS:
-            # Превышено количество попыток
-            await execute_kick(user_id, context, reason="исчерпаны попытки")
-        else:
-            # Уведомление о неверной попытке
-            warning = await update.effective_chat.send_message(
-                f"❌ Неверное кодовое слово! Осталось попыток: {MAX_ATTEMPTS - user_data['attempts']}"
-            )
-            context.job_queue.run_once(
-                lambda ctx: delete_message_safe(warning.chat.id, warning.message_id, ctx),
-                5,
-                data=warning.message_id
-            )
+            return
+
+        # Проверка попыток
+        if user_data["attempts"] >= MAX_ATTEMPTS:
+            logger.info(f"Превышены попытки для {user_id}")
+            await execute_kick(user_id, context, "исчерпаны попытки")
+            return
+
+        # Уведомление об ошибке
+        warning = await update.effective_chat.send_message(
+            f"❌ Неверно! Осталось попыток: {MAX_ATTEMPTS - user_data['attempts']}"
+        )
+        context.job_queue.run_once(
+            lambda ctx: delete_message_safe(warning.chat.id, warning.message_id, ctx),
+            5,
+            name=f"del_warn_{user_id}"
+        )
 
     except Exception as e:
         logger.error(f"Ошибка в handle_user_message: {e}")
 
 async def kick_user_callback(context: ContextTypes.DEFAULT_TYPE):
-    """Кик пользователя по таймауту"""
+    """Обработка таймаута"""
     job = context.job
-    chat_id, user_id, instructions_msg = job.data
-    
-    if user_id in pending_verification:
-        await execute_kick(user_id, context, reason="таймаут")
+    logger.debug(f"Сработал таймер кика: {job.name}")
+    chat_id, user_id, instr_msg = job.data
+    await execute_kick(user_id, context, "таймаут")
 
 async def execute_kick(user_id: int, context: ContextTypes.DEFAULT_TYPE, reason: str):
-    """Выполнение кика пользователя"""
+    """Выполнение кика"""
     try:
-        user_data = pending_verification.get(user_id)
-        if not user_data:
+        logger.info(f"Попытка кика {user_id}, причина: {reason}")
+        
+        if user_id not in pending_verification:
+            logger.warning(f"Пользователь {user_id} не найден")
             return
 
+        user_data = pending_verification[user_id]
+        
         # Удаление сообщений
         for msg_id in user_data["messages"]:
             await delete_message_safe(user_data["chat_id"], msg_id, context)
@@ -150,9 +163,9 @@ async def execute_kick(user_id: int, context: ContextTypes.DEFAULT_TYPE, reason:
             chat_id=user_data["chat_id"],
             user_id=user_id,
             until_date=datetime.now() + timedelta(seconds=30)
-        )
+        logger.info(f"Пользователь {user_id} забанен")
         
-        # Уведомление о кике
+        # Уведомление
         notification = await context.bot.send_message(
             user_data["chat_id"],
             f"🚫 Пользователь удалён ({reason})"
@@ -160,26 +173,23 @@ async def execute_kick(user_id: int, context: ContextTypes.DEFAULT_TYPE, reason:
         context.job_queue.run_once(
             lambda ctx: delete_message_safe(notification.chat.id, notification.message_id, ctx),
             10,
-            data=notification.message_id
+            name=f"del_notif_{user_id}"
         )
 
     except Exception as e:
-        logger.error(f"Ошибка при кике пользователя {user_id}: {e}")
+        logger.error(f"Ошибка кика {user_id}: {e}")
     finally:
         if user_id in pending_verification:
             del pending_verification[user_id]
+            logger.info(f"Пользователь {user_id} удален из очереди")
 
 def main():
-    application = Application.builder().token("7931308034:AAGoN08BoCi4eQl7fI-KFbgIvMYRwsVITAE").build()
+    application = Application.builder().token("YOUR_BOT_TOKEN").build()
     
-    # Регистрация обработчиков
-    application.add_handler(
-        MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, welcome_new_member)
-    )
-    application.add_handler(
-        MessageHandler(filters.ALL & ~filters.COMMAND, handle_user_message)
-    )
+    application.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, welcome_new_member))
+    application.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_user_message))
     
+    logger.info("Бот запущен")
     application.run_polling()
 
 if __name__ == "__main__":
