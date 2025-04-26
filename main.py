@@ -237,7 +237,7 @@ async def check_rights(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 def main():
-    application = Application.builder().token("YOUR_BOT_TOKEN").build()
+    application = Application.builder().token("7931308034:AAGoN08BoCi4eQl7fI-KFbgIvMYRwsVITAE").build()
     application.add_handler(CommandHandler("check_rights", check_rights))
     application.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, welcome_new_member))
     application.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_user_message))
