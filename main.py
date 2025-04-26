@@ -146,9 +146,9 @@ async def handle_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             f"❌ Неверно! Осталось попыток: {MAX_ATTEMPTS - user_data['attempts']}"
         )
         context.job_queue.run_once(
-            lambda ctx: delete_message_safe(chat_id, warning.message_id, ctx),
-            5,
-            name=f"del_warn_{user_id}"
+            partial(delete_message_safe, chat_id, instructions.message_id),
+                15,
+                name=f"del_instr_{user_id}"
         )
 
     except Exception as e:
@@ -186,6 +186,7 @@ async def execute_kick(user_id: int, context: ContextTypes.DEFAULT_TYPE, reason:
             user_id=user_id,
             until_date=datetime.now() + timedelta(seconds=30)
         await debug_message(context, chat_id, f"Пользователь {user_id} забанен")
+        )
         
         # Уведомление
         notification = await context.bot.send_message(
