@@ -164,6 +164,7 @@ async def execute_kick(user_id: int, context: ContextTypes.DEFAULT_TYPE, reason:
             user_id=user_id,
             until_date=datetime.now() + timedelta(seconds=30)
         logger.info(f"Пользователь {user_id} забанен")
+        )
         
         # Уведомление
         notification = await context.bot.send_message(
