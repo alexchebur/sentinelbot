@@ -137,11 +137,14 @@ async def kick_user_callback(context: ContextTypes.DEFAULT_TYPE):
                 logger.error(f"Failed to delete message {msg_id}: {e}")
         
         # Кикаем пользователя
-        await context.bot.ban_chat_member(
+        await context.bot.ban_chat_member(  # Исправлено: добавлена закрывающая скобка
             chat_id=chat_id,
             user_id=user_id,
             until_date=datetime.now() + timedelta(seconds=30)
-        await context.bot.unban_chat_member(chat_id, user_id)
+        )  # Закрывающая скобка здесь
+        
+        # Опционально: разбанить, если нужно сразу разрешить вернуться
+        # await context.bot.unban_chat_member(chat_id, user_id)
         
         # Отправляем и удаляем уведомление
         msg = await context.bot.send_message(
@@ -159,9 +162,8 @@ async def kick_user_callback(context: ContextTypes.DEFAULT_TYPE):
     finally:
         if user_id in pending_verification:
             del pending_verification[user_id]
-
 def main():
-    application = Application.builder().token("YOUR_BOT_TOKEN").build()
+    application = Application.builder().token("7931308034:AAGoN08BoCi4eQl7fI-KFbgIvMYRwsVITAE").build()
     
     # Обработчики
     application.add_handler(
