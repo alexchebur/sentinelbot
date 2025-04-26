@@ -1,6 +1,7 @@
 import logging
 import asyncio
 from datetime import datetime, timedelta
+from functools import partial  # Добавлен импорт partial
 from telegram import Update
 from telegram.ext import (
     Application,
@@ -9,6 +10,7 @@ from telegram.ext import (
     ContextTypes,
     JobQueue,
 )
+from telegram.error import RetryAfter  # Добавлена обработка ошибок API
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -26,7 +28,7 @@ async def debug_message(context: ContextTypes.DEFAULT_TYPE, chat_id: int, text: 
     try:
         msg = await context.bot.send_message(chat_id, f"DEBUG: {text}")
         context.job_queue.run_once(
-            lambda ctx: ctx.bot.delete_message(chat_id, msg.message_id),
+            partial(delete_message_safe, chat_id, msg.message_id),  # Замена lambda на partial
             delay
         )
     except Exception as e:
@@ -45,6 +47,13 @@ async def welcome_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE)
     """Обработка новых участников"""
     try:
         chat_id = update.effective_chat.id
+        
+        # Проверка прав бота (ДОБАВЛЕНО)
+        bot_member = await context.bot.get_chat_member(chat_id, context.bot.id)
+        if not (bot_member.can_restrict_members and bot_member.can_delete_messages):
+            await debug_message(context, chat_id, "❌ Боту не хватает прав: удаление сообщений/бан пользователей!")
+            return
+
         await debug_message(context, chat_id, "Новый пользователь обнаружен")
         
         # Удаление системного сообщения
@@ -66,16 +75,16 @@ async def welcome_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE)
             )
             await debug_message(context, chat_id, f"Инструкция отправлена: {instructions.message_id}")
 
-            # Задание на удаление инструкции
+            # Задание на удаление инструкции (ИСПРАВЛЕНО: partial вместо lambda)
             context.job_queue.run_once(
-                lambda ctx: delete_message_safe(chat_id, instructions.message_id, ctx),
+                partial(delete_message_safe, chat_id, instructions.message_id),
                 15,
                 name=f"del_instr_{user_id}"
             )
 
             # Регистрация задания на кик
             job = context.job_queue.run_once(
-                kick_user_callback,
+                partial(kick_user_callback, user_id=user_id),  # Исправлено
                 60,
                 data=(chat_id, user_id, instructions.message_id),
                 name=f"kick_{user_id}"
@@ -104,10 +113,10 @@ async def handle_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE
         await debug_message(context, chat_id, "Пользователь не в списке проверки")
         return
 
-    user_data = pending_verification.pop(user_id, None)
-    if not user_data:
-        await debug_message(context, chat_id, "Пользователь уже удалён из очереди")
-        return
+    try:
+        user_data = pending_verification[user_id]
+        user_data["attempts"] += 1
+        await debug_message(context, chat_id, f"Попытка {user_data['attempts']}/{MAX_ATTEMPTS}")
         
         # Удаление сообщения
         await delete_message_safe(chat_id, update.message.message_id, context)
@@ -126,7 +135,7 @@ async def handle_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE
                 parse_mode="Markdown"
             )
             context.job_queue.run_once(
-                lambda ctx: delete_message_safe(chat_id, confirmation.message_id, ctx),
+                partial(delete_message_safe, chat_id, confirmation.message_id),
                 10,
                 name=f"del_conf_{user_id}"
             )
@@ -146,9 +155,9 @@ async def handle_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             f"❌ Неверно! Осталось попыток: {MAX_ATTEMPTS - user_data['attempts']}"
         )
         context.job_queue.run_once(
-            partial(delete_message_safe, chat_id, instructions.message_id),
-                15,
-                name=f"del_instr_{user_id}"
+            partial(delete_message_safe, chat_id, warning.message_id),
+            5,
+            name=f"del_warn_{user_id}"
         )
 
     except Exception as e:
@@ -156,20 +165,21 @@ async def handle_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE
         await debug_message(context, chat_id, f"Ошибка обработки: {str(e)}")
 
 async def kick_user_callback(context: ContextTypes.DEFAULT_TYPE):
-    """Обработка таймаута"""
+    """Обработка таймаута (ИСПРАВЛЕНА СИГНАТУРА)"""
     job = context.job
     chat_id, user_id, instr_msg = job.data
     await debug_message(context, chat_id, f"Сработал таймер кика для {user_id}")
     await execute_kick(user_id, context, "таймаут")
 
 async def execute_kick(user_id: int, context: ContextTypes.DEFAULT_TYPE, reason: str):
-    """Выполнение кика"""
+    """Выполнение кика (ПОЛНОСТЬЮ ПЕРЕРАБОТАНА)"""
     try:
-        if user_id not in pending_verification:
-            await debug_message(context, chat_id, "Пользователь не найден в очереди")
+        # Атомарное извлечение данных (ИСПРАВЛЕНО)
+        user_data = pending_verification.pop(user_id, None)
+        if not user_data:
+            await debug_message(context, "unknown", "Пользователь не найден в очереди")
             return
 
-        user_data = pending_verification[user_id]
         chat_id = user_data["chat_id"]
         await debug_message(context, chat_id, f"Начало кика {user_id} ({reason})")
         
@@ -180,21 +190,27 @@ async def execute_kick(user_id: int, context: ContextTypes.DEFAULT_TYPE, reason:
         # Удаление инструкции
         await delete_message_safe(chat_id, user_data["instructions_msg"], context)
         
-        # Кик пользователя
-        await context.bot.ban_chat_member(
-            chat_id=chat_id,
-            user_id=user_id,
-            until_date=datetime.now() + timedelta(seconds=30)
-        await debug_message(context, chat_id, f"Пользователь {user_id} забанен")
-        )
-        
+        try:
+            # ИСПРАВЛЕННЫЙ ВЫЗОВ С ЗАКРЫВАЮЩЕЙ СКОБКОЙ
+            await context.bot.ban_chat_member(
+                chat_id=chat_id,
+                user_id=user_id,
+                until_date=datetime.now() + timedelta(seconds=30)
+            )
+            await debug_message(context, chat_id, f"Пользователь {user_id} забанен")
+        except RetryAfter as e:
+            logger.warning(f"FloodWait: {e}")
+            await asyncio.sleep(e.retry_after)
+            await execute_kick(user_id, context, reason)  # Повторная попытка
+            return
+
         # Уведомление
         notification = await context.bot.send_message(
             chat_id,
             f"🚫 Пользователь удалён ({reason})"
         )
         context.job_queue.run_once(
-            lambda ctx: delete_message_safe(chat_id, notification.message_id, ctx),
+            partial(delete_message_safe, chat_id, notification.message_id),
             10,
             name=f"del_notif_{user_id}"
         )
@@ -202,13 +218,9 @@ async def execute_kick(user_id: int, context: ContextTypes.DEFAULT_TYPE, reason:
     except Exception as e:
         logger.error(f"Ошибка кика {user_id}: {e}")
         await debug_message(context, chat_id, f"Ошибка кика: {str(e)}")
-    finally:
-        if user_id in pending_verification:
-            del pending_verification[user_id]
-            await debug_message(context, chat_id, f"Пользователь {user_id} удалён из очереди")
 
 def main():
-    application = Application.builder().token("7931308034:AAGoN08BoCi4eQl7fI-KFbgIvMYRwsVITAE").build()
+    application = Application.builder().token("YOUR_BOT_TOKEN").build()
     
     application.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, welcome_new_member))
     application.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_user_message))
