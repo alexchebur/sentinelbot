@@ -150,6 +150,7 @@ async def execute_kick(user_id: int, context: ContextTypes.DEFAULT_TYPE, reason:
             chat_id=user_data["chat_id"],
             user_id=user_id,
             until_date=datetime.now() + timedelta(seconds=30)
+        )
         
         # Уведомление о кике
         notification = await context.bot.send_message(
