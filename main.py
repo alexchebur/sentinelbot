@@ -18,7 +18,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 PASSWORD = "SECRET123"
-MAX_ATTEMPTS = 1
+MAX_ATTEMPTS = 3
 pending_verification = {}
 
 async def delete_message_safe(chat_id: int, message_id: int, context: ContextTypes.DEFAULT_TYPE):
