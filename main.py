@@ -104,10 +104,10 @@ async def handle_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE
         await debug_message(context, chat_id, "Пользователь не в списке проверки")
         return
 
-    try:
-        user_data = pending_verification[user_id]
-        user_data["attempts"] += 1
-        await debug_message(context, chat_id, f"Попытка {user_data['attempts']}/{MAX_ATTEMPTS}")
+    user_data = pending_verification.pop(user_id, None)
+    if not user_data:
+        await debug_message(context, chat_id, "Пользователь уже удалён из очереди")
+        return
         
         # Удаление сообщения
         await delete_message_safe(chat_id, update.message.message_id, context)
