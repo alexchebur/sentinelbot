@@ -1,8 +1,7 @@
+# requirements.txt
 --index-url https://pypi.org/simple
 
-# Основные зависимости
-python-telegram-bot
-chromadb
-httpx
-requests
-numpy<2.0
+python-telegram-bot==20.8
+chromadb==0.4.24
+requests==2.31.0
+python-dotenv==1.0.0
