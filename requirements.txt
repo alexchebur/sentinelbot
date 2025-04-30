@@ -1,2 +1,8 @@
-python-telegram-bot>=22.0
-datetime>=5.5
+--index-url https://pypi.org/simple
+
+# Основные зависимости
+python-telegram-bot
+chromadb
+httpx
+requests
+numpy<2.0
