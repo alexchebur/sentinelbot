@@ -1,246 +1,209 @@
+import os
+import chromadb
+import requests
+import random
 import logging
-import asyncio
-from datetime import datetime, timedelta
-from functools import partial
-from telegram import Update
+from telegram import Update, Bot
 from telegram.ext import (
-    Application,
+    ApplicationBuilder,
+    ContextTypes,
+    CommandHandler,
     MessageHandler,
     filters,
-    ContextTypes,
-    JobQueue,
-    CommandHandler
+    JobQueue
 )
-from telegram.error import RetryAfter
+import xml.etree.ElementTree as ET
+from typing import List
 
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.DEBUG,
-    filename='bot.log'
-)
-logger = logging.getLogger(__name__)
+# ========== КОНФИГУРАЦИЯ ==========
+CHROMA_DB_PATH = "data/chroma_db"
+VENDOR_API_KEY = "sk-or-vv-a8d6e009e2bbe09474b0679fbba83b015ff1c4f255ed76f33b48ccb1632bdc32"
+QA_XML_PATH = "data/qa_pairs.xml"
 
-PASSWORD = "123"
-MAX_ATTEMPTS = 1
-pending_verification = {}
+# Модели и параметры (оставлены как в оригинале)
+EMBEDDING_MODEL = "emb-openai/text-embedding-3-small"
+LLM_MODEL = "google/gemini-flash-1.5"
+TEMPERATURE = 0.3
+SYSTEM_PROMPT = """Ты - ассистент, анализирующий документы. Отвечай точно и информативно,
+используя только предоставленные фрагменты текста и делая оговорку: "согласно имеющейся информации". Делай ссылки на номера пунктов, если они указаны. Если информации недостаточно,
+сообщи об этом. Запрещено указывать расширение файла (например, txt или doc)"""
 
-async def debug_message(context: ContextTypes.DEFAULT_TYPE, chat_id: int, text: str):
-    """Отправка отладочных сообщений в группу"""
+# API эндпойнты
+EMBEDDING_API_URL = "https://api.vsegpt.ru/v1/embeddings"
+CHAT_API_URL = "https://api.vsegpt.ru/v1/chat/completions"
+
+# Настройки расписания (пример: 2 раза в час)
+SCHEDULE_SETTINGS = {
+    'interval': 15,  # в секундах (30 минут = 2 раза в час)
+    'first': 10        # первое сообщение через 10 сек после старта
+}
+
+# ========== ИНИЦИАЛИЗАЦИЯ БАЗЫ ДАННЫХ ==========
+class CustomEmbedder:
+    # Реализация идентична оригинальной
+    def __init__(self, api_key: str, model_name: str):
+        self.api_key = api_key
+        self.model_name = model_name
+
+    def __call__(self, input: List[str]) -> List[List[float]]:
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json"
+        }
+        data = {"model": self.model_name, "input": input}
+        try:
+            response = requests.post(EMBEDDING_API_URL, headers=headers, json=data)
+            response.raise_for_status()
+            return [item['embedding'] for item in response.json()['data']]
+        except Exception as e:
+            logging.error(f"Embedding error: {str(e)}")
+            raise
+
+def initialize_chroma():
+    client = chromadb.PersistentClient(path=CHROMA_DB_PATH)
+    embedder = CustomEmbedder(VENDOR_API_KEY, EMBEDDING_MODEL)
     try:
-        await context.bot.send_message(
-            chat_id,
-            f"🔧 [DEBUG] {datetime.now().strftime('%H:%M:%S')}: {text}"
+        return client.get_collection(
+            name="documents_collection",
+            embedding_function=embedder
         )
     except Exception as e:
-        logger.error(f"Ошибка отладки: {e}")
+        logging.info("Creating new collection...")
+        return client.create_collection(
+            name="documents_collection",
+            embedding_function=embedder
+        )
 
-async def delete_message_safe(chat_id: int, message_id: int, context: ContextTypes.DEFAULT_TYPE):
-    """Удаление сообщения с уведомлением в группу"""
-    try:
-        await context.bot.delete_message(chat_id, message_id)
-        await debug_message(context, chat_id, f"Сообщение {message_id} удалено")
-    except Exception as e:
-        error_text = f"Ошибка удаления {message_id}: {str(e)}"
-        await debug_message(context, chat_id, error_text)
-        logger.error(error_text)
-
-async def welcome_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка новых участников"""
-    chat_id = update.effective_chat.id
-    try:
-        await debug_message(context, chat_id, "Обнаружен новый участник")
+# ========== ОСНОВНОЙ КЛАСС БОТА ==========
+class AnticorruptionBot:
+    def __init__(self, token: str):
+        self.bot = Bot(token)
+        self.collection = initialize_chroma()
+        self.qa_pairs = self.load_qa_pairs()
         
-        # Проверка прав бота
-        bot_member = await context.bot.get_chat_member(chat_id, context.bot.id)
-        if not (bot_member.can_restrict_members and bot_member.can_delete_messages):
-            await debug_message(context, chat_id, "❌ Бот не имеет прав на удаление/бан!")
-            return
-
-        # Удаление системного сообщения
-        await update.message.delete()
-        await debug_message(context, chat_id, "Системное сообщение удалено")
-
-        for user in update.message.new_chat_members:
-            if user.is_bot:
-                continue
-
-            user_id = user.id
-            await debug_message(context, chat_id, f"Начата обработка @{user.username} (ID: {user_id})")
-
-            # Отправка инструкции
-            instructions = await context.bot.send_message(
-                chat_id,
-                f"👋 {user.mention_markdown()}, у вас 60 секунд для ввода кода!",
-                parse_mode="Markdown"
-            )
-            
-            # Задание на удаление инструкции
-            context.job_queue.run_once(
-                partial(delete_message_safe, chat_id, instructions.message_id),
-                15,
-                name=f"del_instr_{user_id}"
-            )
-
-            # Регистрация задания на кик
-            job = context.job_queue.run_once(
-                partial(kick_user_callback, user_id=user_id),
-                60,
-                data=(chat_id, user_id, instructions.message_id),
-                name=f"kick_{user_id}"
-            )
-            
-            pending_verification[user_id] = {
-                "chat_id": chat_id,
-                "job": job,
-                "instructions_msg": instructions.message_id,
-                "messages": [],
-                "attempts": 0
-            }
-            await debug_message(context, chat_id, f"Запланирован кик @{user.username} в {datetime.now() + timedelta(seconds=60)}")
-
-    except Exception as e:
-        error_text = f"🚨 ОШИБКА: {str(e)}"
-        await debug_message(context, chat_id, error_text)
-        logger.error(error_text)
-
-async def handle_user_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка сообщений"""
-    user_id = update.effective_user.id
-    chat_id = update.effective_chat.id
-    
-    try:
-        if user_id not in pending_verification:
-            await debug_message(context, chat_id, f"Сообщение от @{update.effective_user.username} (не в очереди)")
-            return
-
-        user_data = pending_verification[user_id]
-        user_data["attempts"] += 1
-        await debug_message(context, chat_id, f"Попытка {user_data['attempts']} от @{update.effective_user.username}")
-
-        # Удаление сообщения
-        await delete_message_safe(chat_id, update.message.message_id, context)
-        user_data["messages"].append(update.message.message_id)
-
-        # Проверка пароля
-        if update.message.text and update.message.text.strip() == PASSWORD:
-            await debug_message(context, chat_id, f"✅ @{update.effective_user.username} ввел верный код!")
-            user_data["job"].schedule_removal()
-            await delete_message_safe(chat_id, user_data["instructions_msg"], context)
-            
-            confirmation = await context.bot.send_message(
-                chat_id,
-                f"{update.effective_user.mention_markdown()} верифицирован!",
-                parse_mode="Markdown"
-            )
-            
-            del pending_verification[user_id]
-            return
-
-        # Превышение попыток
-        if user_data["attempts"] >= MAX_ATTEMPTS:
-            await debug_message(context, chat_id, f"🔥 @{update.effective_user.username} исчерпал попытки!")
-            await execute_kick(user_id, context, "неверный код")
-            return
-
-        # Уведомление об ошибке
-        warning = await context.bot.send_message(
-            chat_id,
-            f"❌ Неверно! Осталось попыток: {MAX_ATTEMPTS - user_data['attempts']}"
-        )
-        context.job_queue.run_once(
-            partial(delete_message_safe, chat_id, warning.message_id),
-            5,
-            name=f"del_warn_{user_id}"
-        )
-
-    except Exception as e:
-        error_text = f"🚨 ОШИБКА: {str(e)}"
-        await debug_message(context, chat_id, error_text)
-        logger.error(error_text)
-
-async def kick_user_callback(context: ContextTypes.DEFAULT_TYPE):
-    """Обработка таймаута"""
-    job = context.job
-    chat_id, user_id, instr_msg = job.data
-    await debug_message(context, chat_id, f"⏰ Таймаут верификации для пользователя {user_id}")
-    await execute_kick(user_id, context, "таймаут")
-
-async def execute_kick(user_id: int, context: ContextTypes.DEFAULT_TYPE, reason: str):
-    """Кик пользователя"""
-    try:
-        user_data = pending_verification.pop(user_id, None)
-        if not user_data:
-            await debug_message(context, "unknown", f"⚠️ Пользователь {user_id} уже удален")
-            return
-
-        chat_id = user_data["chat_id"]
-        await debug_message(context, chat_id, f"🛑 Начало процедуры кика ({reason})...")
-
-        # Проверка статуса пользователя
+    def load_qa_pairs(self):
+        """Загрузка вопрос-ответ пар из XML"""
         try:
-            member = await context.bot.get_chat_member(chat_id, user_id)
-            if member.status in ["creator", "administrator"]:
-                await debug_message(context, chat_id, "⛔ Невозможно удалить администратора!")
-                return
+            tree = ET.parse(QA_XML_PATH)
+            root = tree.getroot()
+            return [
+                (qa.find('question').text, qa.find('answer').text)
+                for qa in root.findall('pair')
+            ]
         except Exception as e:
-            await debug_message(context, chat_id, f"⚠️ Ошибка проверки прав: {str(e)}")
+            logging.error(f"Error loading QA pairs: {str(e)}")
+            return []
 
-        # Удаление сообщений
-        await debug_message(context, chat_id, f"🧹 Удаление {len(user_data['messages']} сообщений...")
-        for msg_id in user_data["messages"]:
-            await delete_message_safe(chat_id, msg_id, context)
-
-        # Удаление инструкции
-        await delete_message_safe(chat_id, user_data["instructions_msg"], context)
-
-        # Бан
+    async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработчик входящих сообщений"""
+        user_query = update.message.text
+        chat_id = update.effective_chat.id
+        
         try:
-            await context.bot.ban_chat_member(
+            # Поиск релевантных фрагментов
+            chunks = self.search_chunks(user_query)
+            
+            # Генерация ответа
+            answer = self.generate_answer(user_query, chunks)
+            
+            await context.bot.send_message(
                 chat_id=chat_id,
-                user_id=user_id,
-                until_date=datetime.now() + timedelta(seconds=30)
+                text=answer,
+                parse_mode='Markdown'
             )
-            await debug_message(context, chat_id, f"🔨 Пользователь забанен на 30 сек")
-        except RetryAfter as e:
-            await debug_message(context, chat_id, f"⏳ Ожидаем {e.retry_after} сек...")
-            await asyncio.sleep(e.retry_after)
-            await execute_kick(user_id, context, reason)
-            return
         except Exception as e:
-            await debug_message(context, chat_id, f"🚨 Ошибка бана: {str(e)}")
+            logging.error(f"Error processing message: {str(e)}")
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text="Произошла ошибка при обработке запроса"
+            )
+
+    def search_chunks(self, query: str, n_results: int = 5) -> List[dict]:
+        """Поиск в ChromaDB (аналогично оригиналу)"""
+        results = self.collection.query(
+            query_texts=[query],
+            n_results=n_results
+        )
+        return [{
+            "text": doc[:5000],
+            "source": metadata["source"]
+        } for doc, metadata in zip(results['documents'][0], results['metadatas'][0])]
+
+    def generate_answer(self, query: str, chunks: List[dict]) -> str:
+        """Генерация ответа через LLM (аналогично оригиналу)"""
+        if not chunks:
+            return "Не найдено релевантной информации"
+
+        context = "\n\n".join([f"Источник: {chunk['source']}\nТекст: {chunk['text']}" 
+                              for chunk in chunks])
+
+        headers = {
+            "Authorization": f"Bearer {VENDOR_API_KEY}",
+            "Content-Type": "application/json"
+        }
+
+        data = {
+            "model": LLM_MODEL,
+            "messages": [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "assistant", "content": context},
+                {"role": "user", "content": query}
+            ],
+            "temperature": TEMPERATURE
+        }
+
+        try:
+            response = requests.post(CHAT_API_URL, headers=headers, json=data)
+            response.raise_for_status()
+            return response.json()['choices'][0]['message']['content']
+        except Exception as e:
+            logging.error(f"LLM API error: {str(e)}")
+            return "Ошибка при генерации ответа"
+
+    async def send_scheduled_qa(self, context: ContextTypes.DEFAULT_TYPE):
+        """Отправка случайного вопроса-ответа"""
+        if not self.qa_pairs:
             return
 
-        # Уведомление
-        notification = await context.bot.send_message(
-            chat_id,
-            f"🚫 Пользователь удалён ({reason})"
-        )
-        context.job_queue.run_once(
-            partial(delete_message_safe, chat_id, notification.message_id),
-            10,
-            name=f"del_notif_{user_id}"
-        )
+        chat_id = context.job.chat_id
+        question, answer = random.choice(self.qa_pairs)
+        
+        try:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=f"❓ Вопрос дня:\n{question}\n\n💡 Ответ:\n{answer}"
+            )
+        except Exception as e:
+            logging.error(f"Error sending scheduled QA: {str(e)}")
 
-    except Exception as e:
-        error_text = f"💥 КРИТИЧЕСКАЯ ОШИБКА: {str(e)}"
-        await debug_message(context, chat_id, error_text)
-        logger.error(error_text)
-
-async def check_rights(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Проверка прав бота"""
-    chat_id = update.effective_chat.id
-    bot_member = await context.bot.get_chat_member(chat_id, context.bot.id)
-    await update.message.reply_text(
-        f"🔐 Права бота:\n"
-        f"• Удалять сообщения: {'✅' if bot_member.can_delete_messages else '❌'}\n"
-        f"• Банить пользователей: {'✅' if bot_member.can_restrict_members else '❌'}"
-    )
-
+# ========== ЗАПУСК И НАСТРОЙКА ==========
 def main():
-    application = Application.builder().token("7931308034:AAGoN08BoCi4eQl7fI-KFbgIvMYRwsVITAE").build()
-    application.add_handler(CommandHandler("check_rights", check_rights))
-    application.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, welcome_new_member))
-    application.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_user_message))
+    logging.basicConfig(
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        level=logging.INFO
+    )
+    
+    # Конфигурация
+    TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+    if not TOKEN:
+        raise ValueError("Не задан TELEGRAM_BOT_TOKEN в переменных окружения")
+    
+    # Инициализация приложения
+    application = ApplicationBuilder().token(TOKEN).build()
+    bot = AnticorruptionBot(TOKEN)
+    
+    # Регистрация обработчиков
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_message))
+    
+    # Настройка периодических сообщений
+    job_queue = application.job_queue
+    job_queue.run_repeating(
+        bot.send_scheduled_qa,
+        interval=SCHEDULE_SETTINGS['interval'],
+        first=SCHEDULE_SETTINGS['first'],
+        chat_id=None  # Будет отправлять в чат, откуда запущен бот
+    )
+    
     application.run_polling()
 
 if __name__ == "__main__":
