@@ -13,7 +13,7 @@ from telegram.ext import (
 from typing import List
 
 # ========== КОНФИГУРАЦИЯ ==========
-CHROMA_DB_PATH = "data/chroma_db"
+CHROMA_DB_PATH = "data"
 VENDOR_API_KEY = "sk-or-vv-a8d6e009e2bbe09474b0679fbba83b015ff1c4f255ed76f33b48ccb1632bdc32"
 
 # Модели и параметры
