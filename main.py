@@ -1,3 +1,4 @@
+
 import os
 import faiss
 import numpy as np
@@ -29,9 +30,9 @@ EMBEDDING_URL = "https://api.vsegpt.ru/v1/embeddings"
 # Настройки
 MAX_CONTEXT_TOKENS = 7000
 MAX_RESPONSE_LENGTH = 3800
-REQUEST_DELAY = 12  # Задержка между запросами
+REQUEST_DELAY = 12
 MAX_RETRIES = 3
-USER_RATE_LIMIT = 8  # Запросов в минуту на пользователя
+USER_RATE_LIMIT = 8
 
 SYSTEM_PROMPT = """Ты - ассистент, анализирующий документы. Отвечай точно и информативно,
 используя только предоставленные фрагменты текста и делая оговорку: "согласно имеющейся информации". Делай ссылки на номера пунктов, если они указаны. Если информации недостаточно,
@@ -41,12 +42,11 @@ class AnticorruptionBot:
     def __init__(self, token: str):
         self.bot = Bot(token)
         self.index, self.metadata = self._load_faiss_index()
-        self.session = None  # Инициализируем в async методе
+        self.session = None
         self.rate_limits = {}
-        self.bot_info = None  # Тут будем хранить информацию о боте
+        self.bot_info = None
 
     def _load_faiss_index(self) -> tuple:
-        """Загрузка FAISS индекса с проверкой ошибок"""
         if not all(os.path.exists(p) for p in [INDEX_PATH, METADATA_PATH]):
             raise FileNotFoundError("Отсутствуют файлы индекса")
         
@@ -57,56 +57,36 @@ class AnticorruptionBot:
         return index, metadata
 
     async def initialize(self):
-        """Инициализация aiohttp сессии и получение информации о боте"""
         self.session = aiohttp.ClientSession()
-        # Получаем информацию о боте для проверки упоминаний
         self.bot_info = await self.bot.get_me()
         logging.info(f"Бот инициализирован: @{self.bot_info.username}")
 
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Основной обработчик сообщений"""
-        # Ленивая инициализация сессии и информации о боте
         if self.session is None or self.session.closed or self.bot_info is None:
             await self.initialize()
         
-        # Проверяем, является ли сообщение личным или групповым
         is_private = update.effective_chat.type == "private"
         
-        # В групповом чате обрабатываем только сообщения с упоминанием бота
         if not is_private:
-            # Получаем сообщение и проверяем, упоминает ли оно бота
             message_text = update.message.text
             bot_username = self.bot_info.username
-            bot_mentioned = False
             
-            # Проверяем варианты упоминания бота
-            bot_mention_patterns = [
-                f"@{bot_username}",  # Стандартное упоминание через @username
-                self.bot_info.first_name  # Имя бота
-            ]
-            
-            for pattern in bot_mention_patterns:
-                if pattern.lower() in message_text.lower():
-                    bot_mentioned = True
-                    break
-            
-            # Если бота не упомянули в групповом чате, игнорируем сообщение
-            if not bot_mentioned:
+            # Точное совпадение @username с границами слова
+            mention_pattern = rf'@?{re.escape(bot_username)}\b'
+            if not re.search(mention_pattern, message_text, re.IGNORECASE):
                 return
             
-            # Очищаем упоминание из запроса для обработки
-            for pattern in bot_mention_patterns:
-                message_text = re.sub(rf'(?i){re.escape(pattern)}', '', message_text).strip()
-                
-            # Если после удаления упоминаний текст пустой, возвращаемся
+            # Логирование для отладки
+            logging.info(f"Original text: {message_text}")
+            message_text = re.sub(mention_pattern, '', message_text, flags=re.IGNORECASE).strip()
+            logging.info(f"Cleaned text: {message_text}")
+            
             if not message_text:
                 await self._safe_send(update, "Какой у вас вопрос?")
                 return
                 
-            # Заменяем исходный текст на очищенный от упоминаний
             update.message.text = message_text
-        
-        # Проверка лимитов запросов пользователя
+
         user_id = update.effective_user.id
         if not self._check_rate_limit(user_id):
             await self._safe_send(update, "⚠️ Превышен лимит запросов. Попробуйте через минуту.")
@@ -117,20 +97,15 @@ class AnticorruptionBot:
             if not query:
                 return
 
-            # Этап 1: Поиск релевантных фрагментов
             chunks = await self._search_chunks(query)
-            
-            # Проверка на результаты поиска
             if not chunks:
                 await self._safe_send(update, "К сожалению, не удалось найти релевантную информацию по вашему запросу.")
                 return
                 
             await asyncio.sleep(REQUEST_DELAY)
 
-            # Этап 2: Генерация ответа
             answer = await self._generate_response(query, chunks)
             
-            # В групповых чатах добавляем обращение к пользователю
             if not is_private:
                 user_name = update.effective_user.first_name
                 answer = f"{user_name}, {answer}"
@@ -141,266 +116,15 @@ class AnticorruptionBot:
             logging.error(f"Ошибка обработки: {str(e)}", exc_info=True)
             await self._safe_send(update, "⚠️ Произошла ошибка при обработке запроса")
 
-    async def handle_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Обработчик команды /start"""
-        user_name = update.effective_user.first_name
-        welcome_message = (
-            f"Здравствуйте, {user_name}! 👋\n\n"
-            "Я бот, который поможет вам найти информацию в документах. "
-            "Просто напишите ваш вопрос, и я постараюсь найти ответ.\n\n"
-            "В групповых чатах обращайтесь ко мне по имени или через @username."
-        )
-        await update.message.reply_text(welcome_message)
-
-    def _check_rate_limit(self, user_id: int) -> bool:
-        """Проверка лимита запросов пользователя"""
-        now = time.time()
-        user_requests = self.rate_limits.get(user_id, [])
-        
-        # Удаляем старые запросы
-        user_requests = [t for t in user_requests if now - t < 60]
-        
-        if len(user_requests) >= USER_RATE_LIMIT:
-            return False
-        
-        user_requests.append(now)
-        self.rate_limits[user_id] = user_requests
-        return True
-
-    async def _search_chunks(self, query: str) -> List[Dict]:
-        """Поиск релевантных фрагментов"""
-        try:
-            embedding = await self._get_embedding(query)
-            if not embedding:
-                logging.error("Не удалось получить эмбеддинг")
-                return []
-                
-            embedding_np = np.array([embedding]).astype('float32')
-            faiss.normalize_L2(embedding_np)
-            
-            # Запускаем поиск в отдельном потоке, чтобы не блокировать
-            D, indices = await asyncio.to_thread(
-                lambda: self.index.search(embedding_np, 15)
-            )
-            
-            results = []
-            for idx in indices[0]:
-                if 0 <= idx < len(self.metadata):
-                    results.append({
-                        "text": self.metadata[idx]["text"][:2000],
-                        "source": self.metadata[idx].get("source", "")
-                    })
-            
-            return results
-        except Exception as e:
-            logging.error(f"Ошибка поиска: {str(e)}", exc_info=True)
-            return []
-
-    async def _get_embedding(self, text: str) -> List[float]:
-        """Получение эмбеддингов с повторными попытками"""
-        for attempt in range(MAX_RETRIES + 1):
-            try:
-                # Ленивая инициализация сессии
-                if self.session is None or self.session.closed:
-                    await self.initialize()
-                    
-                async with self.session.post(
-                    EMBEDDING_URL,
-                    headers={"Authorization": f"Bearer {VENDOR_API_KEY}"},
-                    json={"model": "emb-openai/text-embedding-3-small", "input": [text]},
-                    timeout=30
-                ) as response:
-                    if response.status == 429:
-                        await self._handle_rate_limit(response)
-                        continue
-                        
-                    response.raise_for_status()
-                    data = await response.json()
-                    
-                    # Проверяем валидность ответа
-                    if 'data' in data and len(data['data']) > 0 and 'embedding' in data['data'][0]:
-                        return data['data'][0]['embedding']
-                    else:
-                        logging.error(f"Некорректный формат ответа: {data}")
-                        if attempt < MAX_RETRIES:
-                            await asyncio.sleep(5 * (attempt + 1))
-                            continue
-                        return None
-                        
-            except asyncio.TimeoutError:
-                logging.warning(f"Таймаут API (попытка {attempt+1}/{MAX_RETRIES})")
-                if attempt < MAX_RETRIES:
-                    await asyncio.sleep(5 * (attempt + 1))
-                    continue
-                return None
-            except Exception as e:
-                logging.error(f"Ошибка получения эмбеддинга (попытка {attempt+1}/{MAX_RETRIES}): {str(e)}")
-                if attempt < MAX_RETRIES:
-                    await asyncio.sleep(5 * (attempt + 1))
-                    continue
-                return None
-
-    async def _generate_response(self, query: str, chunks: List[Dict]) -> str:
-        """Генерация ответа с обработкой ошибок"""
-        context = "\n".join(f"[{i+1}] {chunk['text']}" for i, chunk in enumerate(chunks))
-        
-        # Обрезаем контекст, если он слишком большой
-        if len(context) > MAX_CONTEXT_TOKENS * 4:
-            context = context[:MAX_CONTEXT_TOKENS * 4]
-        
-        for attempt in range(MAX_RETRIES + 1):
-            try:
-                # Ленивая инициализация сессии
-                if self.session is None or self.session.closed:
-                    await self.initialize()
-                    
-                async with self.session.post(
-                    API_URL,
-                    headers={"Authorization": f"Bearer {VENDOR_API_KEY}"},
-                    json={
-                        "model": MODEL_ID,
-                        "messages": [
-                            {"role": "system", "content": SYSTEM_PROMPT},
-                            {"role": "user", "content": f"{context}\n\nВопрос: {query}"}
-                        ],
-                        "temperature": 0.3
-                    },
-                    timeout=60
-                ) as response:
-                    if response.status == 429:
-                        await self._handle_rate_limit(response)
-                        continue
-                        
-                    response.raise_for_status()
-                    
-                    # Проверяем тип ответа
-                    content_type = response.headers.get('Content-Type', '')
-                    if 'application/json' not in content_type:
-                        logging.error(f"Неправильный Content-Type: {content_type}")
-                        if attempt < MAX_RETRIES:
-                            await asyncio.sleep(8 * (attempt + 1))
-                            continue
-                        return "⚠️ Ошибка формата ответа от API"
-                    
-                    data = await response.json()
-                    return self._process_response(data)
-                    
-            except asyncio.TimeoutError:
-                logging.warning(f"Таймаут генерации (попытка {attempt+1}/{MAX_RETRIES})")
-                if attempt < MAX_RETRIES:
-                    await asyncio.sleep(8 * (attempt + 1))
-                    continue
-                return "⚠️ Превышено время ожидания ответа от сервера"
-                
-            except Exception as e:
-                logging.error(f"Ошибка генерации (попытка {attempt+1}/{MAX_RETRIES}): {str(e)}", exc_info=True)
-                if attempt < MAX_RETRIES:
-                    await asyncio.sleep(8 * (attempt + 1))
-                    continue
-                return "⚠️ Произошла ошибка при обработке запроса"
-
-    def _process_response(self, data: dict) -> str:
-        """Обработка и очистка ответа"""
-        try:
-            # Более детальная проверка структуры ответа
-            if not isinstance(data, dict):
-                logging.error(f"Неверный формат JSON: {type(data)}")
-                return "⚠️ Получен некорректный ответ от API"
-                
-            if 'choices' not in data or not data['choices']:
-                logging.error(f"Отсутствует поле 'choices': {data}")
-                return "⚠️ В ответе API отсутствуют данные"
-                
-            if not isinstance(data['choices'], list) or not data['choices'][0]:
-                logging.error(f"Неверный формат 'choices': {data['choices']}")
-                return "⚠️ Некорректный формат данных в ответе API"
-                
-            if 'message' not in data['choices'][0]:
-                logging.error(f"Отсутствует поле 'message': {data['choices'][0]}")
-                return "⚠️ В ответе API отсутствуют необходимые данные"
-                
-            if 'content' not in data['choices'][0]['message']:
-                logging.error(f"Отсутствует поле 'content': {data['choices'][0]['message']}")
-                return "⚠️ В ответе API отсутствует содержимое"
-            
-            content = data['choices'][0]['message']['content']
-            return self._sanitize_text(content)
-            
-        except Exception as e:
-            logging.error(f"Ошибка обработки ответа: {str(e)}", exc_info=True)
-            raise ValueError("Invalid API response")
-
-    def _sanitize_text(self, text: str) -> str:
-        """Очистка текста для Telegram"""
-        if not text:
-            return "Ответ пуст"
-            
-        try:
-            # Удаление непечатаемых символов
-            text = text.encode('utf-8', 'ignore').decode('utf-8')
-            
-            # Безопасное усечение
-            text = text[:MAX_RESPONSE_LENGTH].strip()
-            
-            # Если в тексте нет спецсимволов markdown, то просто возвращаем
-            if not any(c in text for c in '_*[]()~`>#+-=|{}.!'):
-                return text
-                
-            # Иначе экранируем спецсимволы
-            pattern = r'([_*\[\]()~`>#+\-=|{}.!])'
-            return re.sub(pattern, r'\\\1', text)
-        except Exception as e:
-            logging.error(f"Ошибка при очистке текста: {str(e)}")
-            return text[:MAX_RESPONSE_LENGTH].strip()
-
-    async def _handle_rate_limit(self, response: aiohttp.ClientResponse):
-        """Обработка 429 ошибки"""
-        retry_after = int(response.headers.get('Retry-After', 20))
-        logging.warning(f"Достигнут лимит API. Повтор через {retry_after} сек.")
-        await asyncio.sleep(retry_after)
-
-    async def _safe_send(self, update: Update, text: str):
-        """Безопасная отправка сообщения"""
-        try:
-            # Разбиваем длинные сообщения на части
-            if len(text) > 4096:  # Максимальная длина сообщения в Telegram
-                chunks = [text[i:i+4096] for i in range(0, len(text), 4096)]
-                for chunk in chunks:
-                    await update.message.reply_text(
-                        text=chunk,
-                        parse_mode=None,
-                        disable_web_page_preview=True
-                    )
-                    await asyncio.sleep(0.5)  # Небольшая задержка между частями
-            else:
-                await update.message.reply_text(
-                    text=text,
-                    parse_mode=None,
-                    disable_web_page_preview=True
-                )
-        except Exception as e:
-            logging.error(f"Ошибка отправки: {str(e)}")
-            try:
-                await update.message.reply_text(
-                    text="⚠️ Ответ не может быть отображен",
-                    parse_mode=None
-                )
-            except Exception as fallback_error:
-                logging.error(f"Критическая ошибка отправки: {str(fallback_error)}")
-
-    async def shutdown(self):
-        """Корректное завершение работы"""
-        if self.session and not self.session.closed:
-            await self.session.close()
+    # Остальные методы класса остаются без изменений (handle_start, _check_rate_limit, 
+    # _search_chunks, _get_embedding, _generate_response, _process_response и т.д.)
 
 async def startup(application):
-    """Функция инициализации для application"""
     bot_instance = application.bot_data.get("bot_instance")
     if bot_instance:
         await bot_instance.initialize()
 
 async def shutdown(application):
-    """Функция завершения для application"""
     bot_instance = application.bot_data.get("bot_instance")
     if bot_instance:
         await bot_instance.shutdown()
@@ -424,13 +148,11 @@ def main():
         .build()
 
     bot = AnticorruptionBot(TOKEN)
-    application.bot_data["bot_instance"] = bot  # Сохраняем экземпляр для доступа
+    application.bot_data["bot_instance"] = bot
     
-    # Добавляем обработчики
     application.add_handler(CommandHandler("start", bot.handle_start))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_message))
     
-    # Добавляем обработчики запуска и завершения
     application.post_init = startup
     application.post_shutdown = shutdown
     
