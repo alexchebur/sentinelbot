@@ -36,8 +36,8 @@ MAX_RESPONSE_LENGTH = 10000
 REQUEST_DELAY = 12
 MAX_RETRIES = 3
 USER_RATE_LIMIT = 8
-BROADCAST_INTERVAL = 36  # 1 час в секундах
-BROADCAST_INITIAL_DELAY = 10  # Задержка перед первой рассылкой в секундах
+BROADCAST_INTERVAL = 3600
+BROADCAST_INITIAL_DELAY = 10
 
 SYSTEM_PROMPT = """Ты - ассистент, анализирующий документы. Отвечай точно и информативно,
 используя только предоставленные фрагменты текста и делая оговорку: "согласно имеющейся информации". 
@@ -215,13 +215,13 @@ class AnticorruptionBot:
 
     def _clean_markdown(self, text: str) -> str:
         markdown_patterns = [
-            r'\*\*(.*?)\*\*',    # Жирный текст
-            r'\*(.*?)\*',         # Курсив
-            r'~~(.*?)~~',         # Зачеркивание
-            r'\[(.*?)\]\(.*?\)',  # Ссылки
-            r'`{3}.*?\n',         # Блоки кода
-            r'`',                 # Инлайн код
-            r'^#+\s*',           # Заголовки
+            r'\*\*(.*?)\*\*',
+            r'\*(.*?)\*',
+            r'~~(.*?)~~',
+            r'\[(.*?)\]\(.*?\)',
+            r'`{3}.*?\n',
+            r'`',
+            r'^#+\s*',
         ]
 
         for pattern in markdown_patterns:
@@ -235,40 +235,23 @@ class AnticorruptionBot:
         except Exception as e:
             logging.error(f"Ошибка отправки сообщения: {str(e)}")
 
-    async def broadcast_random_qa(self, context: ContextTypes.DEFAULT_TYPE):
-        if not self.qa_pairs:
-            logging.error("Нет доступных QA пар для рассылки")
-            return
-
-        async with self.broadcast_lock:
-            pair = np.random.choice(self.qa_pairs)
-            message = f"❓ Вопрос дня:\n{pair['question']}\n\n💡 Ответ:\n{pair['answer']}"
-
-            errors = []
-            for chat_id in list(self.active_chats):
-                try:
-                    await self.bot.send_message(chat_id=chat_id, text=message)
-                    await asyncio.sleep(0.1)  # Небольшая задержка между сообщениями
-                except Exception as e:
-                    errors.append((chat_id, str(e)))
-                    logging.error(f"Ошибка рассылки в чат {chat_id}: {str(e)}")
-
-            if errors:
-                error_msg = "⚠️ Ошибки при рассылке:\n" + "\n".join(
-                    f"Чат {cid}: {err}" for cid, err in errors[:5]  # Ограничиваем количество выводимых ошибок
-                )
-                if len(errors) > 5:
-                    error_msg += f"\n...и ещё {len(errors) - 5} ошибок"
-                
-                # Отправляем ошибки в первый доступный чат (например, админу)
-                if self.active_chats:
-                    await self._safe_send_to_chat(next(iter(self.active_chats)), error_msg[:4000])
-
-    async def _safe_send_to_chat(self, chat_id: int, text: str):
+    async def send_file_snippet(self, context: ContextTypes.DEFAULT_TYPE):
         try:
-            await self.bot.send_message(chat_id=chat_id, text=text[:MAX_RESPONSE_LENGTH])
-        except Exception as e:
-            logging.error(f"Ошибка отправки сообщения в чат {chat_id}: {str(e)}")
+            with open(QA_PAIRS_PATH, 'r', encoding='utf-8') as f:
+                content = f.read(200)
+                if not content:
+                    return
+                
+                message = f"📋 Сниппет документа:\n{content}"
+                
+                for chat_id in list(self.active_chats):
+                    try:
+                        await self.bot.send_message(chat_id=chat_id, text=message)
+                        await asyncio.sleep(0.1)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
 
     async def shutdown(self):
         if self.session:
@@ -278,9 +261,8 @@ async def startup(application):
     bot_instance = application.bot_data.get("bot_instance")
     if bot_instance:
         await bot_instance.initialize()
-        # Запускаем периодическую рассылку
         application.job_queue.run_repeating(
-            bot_instance.broadcast_random_qa,
+            bot_instance.send_file_snippet,
             interval=BROADCAST_INTERVAL,
             first=BROADCAST_INITIAL_DELAY
         )
