@@ -120,14 +120,14 @@ class AnticorruptionBot:
             
             # Запускаем поиск в отдельном потоке, чтобы не блокировать
             D, indices = await asyncio.to_thread(
-                lambda: self.index.search(embedding_np, 5)
+                lambda: self.index.search(embedding_np, 10)
             )
             
             results = []
             for idx in indices[0]:
                 if 0 <= idx < len(self.metadata):
                     results.append({
-                        "text": self.metadata[idx]["text"][:2000],
+                        "text": self.metadata[idx]["text"][:3000],
                         "source": self.metadata[idx].get("source", "")
                     })
             
