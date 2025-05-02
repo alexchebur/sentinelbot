@@ -36,7 +36,7 @@ MAX_RESPONSE_LENGTH = 10000
 REQUEST_DELAY = 12
 MAX_RETRIES = 3
 USER_RATE_LIMIT = 8
-BROADCAST_INTERVAL = 3600  # 1 час в секундах
+BROADCAST_INTERVAL = 36  # 1 час в секундах
 BROADCAST_INITIAL_DELAY = 10  # Задержка перед первой рассылкой в секундах
 
 SYSTEM_PROMPT = """Ты - ассистент, анализирующий документы. Отвечай точно и информативно,
