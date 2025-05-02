@@ -6,12 +6,13 @@ import pickle
 import logging
 import asyncio
 import re
-import time  # Added import for time module
+import time
 from telegram import Update, Bot
 from telegram.ext import (
     ApplicationBuilder,
     ContextTypes,
     MessageHandler,
+    CommandHandler,
     filters,
     AIORateLimiter
 )
@@ -42,6 +43,7 @@ class AnticorruptionBot:
         self.index, self.metadata = self._load_faiss_index()
         self.session = None  # Инициализируем в async методе
         self.rate_limits = {}
+        self.bot_info = None  # Тут будем хранить информацию о боте
 
     def _load_faiss_index(self) -> tuple:
         """Загрузка FAISS индекса с проверкой ошибок"""
@@ -55,15 +57,56 @@ class AnticorruptionBot:
         return index, metadata
 
     async def initialize(self):
-        """Инициализация aiohttp сессии"""
+        """Инициализация aiohttp сессии и получение информации о боте"""
         self.session = aiohttp.ClientSession()
+        # Получаем информацию о боте для проверки упоминаний
+        self.bot_info = await self.bot.get_me()
+        logging.info(f"Бот инициализирован: @{self.bot_info.username}")
 
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Основной обработчик сообщений"""
-        # Ленивая инициализация сессии
-        if self.session is None or self.session.closed:
+        # Ленивая инициализация сессии и информации о боте
+        if self.session is None or self.session.closed or self.bot_info is None:
             await self.initialize()
+        
+        # Проверяем, является ли сообщение личным или групповым
+        is_private = update.effective_chat.type == "private"
+        
+        # В групповом чате обрабатываем только сообщения с упоминанием бота
+        if not is_private:
+            # Получаем сообщение и проверяем, упоминает ли оно бота
+            message_text = update.message.text
+            bot_username = self.bot_info.username
+            bot_mentioned = False
             
+            # Проверяем варианты упоминания бота
+            bot_mention_patterns = [
+                f"@{bot_username}",  # Стандартное упоминание через @username
+                self.bot_info.first_name  # Имя бота
+            ]
+            
+            for pattern in bot_mention_patterns:
+                if pattern.lower() in message_text.lower():
+                    bot_mentioned = True
+                    break
+            
+            # Если бота не упомянули в групповом чате, игнорируем сообщение
+            if not bot_mentioned:
+                return
+            
+            # Очищаем упоминание из запроса для обработки
+            for pattern in bot_mention_patterns:
+                message_text = re.sub(rf'(?i){re.escape(pattern)}', '', message_text).strip()
+                
+            # Если после удаления упоминаний текст пустой, возвращаемся
+            if not message_text:
+                await self._safe_send(update, "Какой у вас вопрос?")
+                return
+                
+            # Заменяем исходный текст на очищенный от упоминаний
+            update.message.text = message_text
+        
+        # Проверка лимитов запросов пользователя
         user_id = update.effective_user.id
         if not self._check_rate_limit(user_id):
             await self._safe_send(update, "⚠️ Превышен лимит запросов. Попробуйте через минуту.")
@@ -86,11 +129,28 @@ class AnticorruptionBot:
 
             # Этап 2: Генерация ответа
             answer = await self._generate_response(query, chunks)
+            
+            # В групповых чатах добавляем обращение к пользователю
+            if not is_private:
+                user_name = update.effective_user.first_name
+                answer = f"{user_name}, {answer}"
+                
             await self._safe_send(update, answer)
 
         except Exception as e:
             logging.error(f"Ошибка обработки: {str(e)}", exc_info=True)
             await self._safe_send(update, "⚠️ Произошла ошибка при обработке запроса")
+
+    async def handle_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработчик команды /start"""
+        user_name = update.effective_user.first_name
+        welcome_message = (
+            f"Здравствуйте, {user_name}! 👋\n\n"
+            "Я бот, который поможет вам найти информацию в документах. "
+            "Просто напишите ваш вопрос, и я постараюсь найти ответ.\n\n"
+            "В групповых чатах обращайтесь ко мне по имени или через @username."
+        )
+        await update.message.reply_text(welcome_message)
 
     def _check_rate_limit(self, user_id: int) -> bool:
         """Проверка лимита запросов пользователя"""
@@ -138,7 +198,7 @@ class AnticorruptionBot:
 
     async def _get_embedding(self, text: str) -> List[float]:
         """Получение эмбеддингов с повторными попытками"""
-        for attempt in range(MAX_RETRIES + 1):  # +1 для корректного счета попыток
+        for attempt in range(MAX_RETRIES + 1):
             try:
                 # Ленивая инициализация сессии
                 if self.session is None or self.session.closed:
@@ -148,7 +208,7 @@ class AnticorruptionBot:
                     EMBEDDING_URL,
                     headers={"Authorization": f"Bearer {VENDOR_API_KEY}"},
                     json={"model": "emb-openai/text-embedding-3-small", "input": [text]},
-                    timeout=30  # Добавляем таймаут
+                    timeout=30
                 ) as response:
                     if response.status == 429:
                         await self._handle_rate_limit(response)
@@ -185,10 +245,10 @@ class AnticorruptionBot:
         context = "\n".join(f"[{i+1}] {chunk['text']}" for i, chunk in enumerate(chunks))
         
         # Обрезаем контекст, если он слишком большой
-        if len(context) > MAX_CONTEXT_TOKENS * 4:  # примерно 4 байта на токен
+        if len(context) > MAX_CONTEXT_TOKENS * 4:
             context = context[:MAX_CONTEXT_TOKENS * 4]
         
-        for attempt in range(MAX_RETRIES + 1):  # +1 для корректного счета попыток
+        for attempt in range(MAX_RETRIES + 1):
             try:
                 # Ленивая инициализация сессии
                 if self.session is None or self.session.closed:
@@ -205,7 +265,7 @@ class AnticorruptionBot:
                         ],
                         "temperature": 0.3
                     },
-                    timeout=60  # Увеличенный таймаут для генерации ответа
+                    timeout=60
                 ) as response:
                     if response.status == 429:
                         await self._handle_rate_limit(response)
@@ -275,8 +335,6 @@ class AnticorruptionBot:
         if not text:
             return "Ответ пуст"
             
-        # Удаление спецсимволов для корректной отправки
-        # Используем более мягкую обработку
         try:
             # Удаление непечатаемых символов
             text = text.encode('utf-8', 'ignore').decode('utf-8')
@@ -368,12 +426,15 @@ def main():
     bot = AnticorruptionBot(TOKEN)
     application.bot_data["bot_instance"] = bot  # Сохраняем экземпляр для доступа
     
+    # Добавляем обработчики
+    application.add_handler(CommandHandler("start", bot.handle_start))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_message))
     
     # Добавляем обработчики запуска и завершения
     application.post_init = startup
     application.post_shutdown = shutdown
     
+    logging.info("Бот запускается...")
     application.run_polling()
 
 if __name__ == "__main__":
