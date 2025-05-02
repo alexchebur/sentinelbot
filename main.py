@@ -9,7 +9,7 @@ import asyncio
 import re
 import time
 import xml.etree.ElementTree as ET
-from telegram import Update, Bot
+from telegram import Update, Bot, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import (
     ApplicationBuilder,
     ContextTypes,
@@ -26,6 +26,7 @@ VENDOR_API_KEY = "sk-or-vv-a8d6e009e2bbe09474b0679fbba83b015ff1c4f255ed76f33b48c
 INDEX_PATH = "/data/faiss_index.bin"
 METADATA_PATH = "/data/metadata.pkl"
 QA_PAIRS_PATH = "/data/qa_pairs.xml"
+ACP_FILE_PATH = "/data/ACP.pdf"
 MODEL_ID = "google/gemini-flash-1.5"
 API_URL = "https://api.vsegpt.ru/v1/chat/completions"
 EMBEDDING_URL = "https://api.vsegpt.ru/v1/embeddings"
@@ -36,7 +37,7 @@ MAX_RESPONSE_LENGTH = 10000
 REQUEST_DELAY = 12
 MAX_RETRIES = 3
 USER_RATE_LIMIT = 8
-BROADCAST_INTERVAL = 30
+BROADCAST_INTERVAL = 3600
 BROADCAST_INITIAL_DELAY = 10
 
 SYSTEM_PROMPT = """Ты - ассистент, анализирующий документы. Отвечай точно и информативно,
@@ -56,6 +57,11 @@ class AnticorruptionBot:
         self.bot_info = None
         self.active_chats: set[int] = set()
         self.broadcast_lock = asyncio.Lock()
+        self._check_acp_file()
+
+    def _check_acp_file(self):
+        if not os.path.exists(ACP_FILE_PATH):
+            raise FileNotFoundError(f"Файл политики не найден: {ACP_FILE_PATH}")
 
     def _load_faiss_index(self) -> tuple:
         if not all(os.path.exists(p) for p in [INDEX_PATH, METADATA_PATH]):
@@ -127,6 +133,11 @@ class AnticorruptionBot:
             if not query:
                 return
 
+            # Обработка кнопки скачивания
+            if query.lower() == "скачать антикоррупционную политику":
+                await self._send_acp_file(update, context)
+                return
+
             chunks = await self._search_chunks(query)
             if not chunks:
                 await self._safe_send(update, "К сожалению, не удалось найти релевантную информацию по вашему запросу.")
@@ -148,7 +159,30 @@ class AnticorruptionBot:
 
     async def handle_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         await self._track_chat(update.effective_chat.id)
-        await self._safe_send(update, "Привет! Задайте мне вопрос по антикоррупционному законодательству.")
+        reply_markup = None
+        
+        if update.effective_chat.type == "private":
+            button = KeyboardButton("Скачать антикоррупционную политику")
+            reply_markup = ReplyKeyboardMarkup([[button]], resize_keyboard=True)
+        
+        await self._safe_send(
+            update,
+            "Привет! Задайте мне вопрос по антикоррупционному законодательству или скачайте документ.",
+            reply_markup=reply_markup
+        )
+
+    async def _send_acp_file(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        try:
+            with open(ACP_FILE_PATH, 'rb') as file:
+                await context.bot.send_document(
+                    chat_id=update.effective_chat.id,
+                    document=file,
+                    filename="ACP.pdf",
+                    caption="Антикоррупционная политика организации"
+                )
+        except Exception as e:
+            logging.error(f"Ошибка отправки файла: {str(e)}")
+            await self._safe_send(update, "⚠️ Не удалось отправить файл")
 
     def _check_rate_limit(self, user_id: int) -> bool:
         now = time.time()
@@ -229,9 +263,12 @@ class AnticorruptionBot:
         
         return text.strip()
 
-    async def _safe_send(self, update: Update, text: str):
+    async def _safe_send(self, update: Update, text: str, reply_markup=None):
         try:
-            await update.message.reply_text(text[:MAX_RESPONSE_LENGTH])
+            await update.message.reply_text(
+                text[:MAX_RESPONSE_LENGTH],
+                reply_markup=reply_markup
+            )
         except Exception as e:
             logging.error(f"Ошибка отправки сообщения: {str(e)}")
 
