@@ -8,6 +8,7 @@ import logging
 import asyncio
 import re
 import time
+import xml.etree.ElementTree as ET
 from telegram import Update, Bot
 from telegram.ext import (
     ApplicationBuilder,
@@ -15,14 +16,16 @@ from telegram.ext import (
     MessageHandler,
     CommandHandler,
     filters,
-    AIORateLimiter
+    AIORateLimiter,
+    JobQueue
 )
-from typing import List, Dict
+from typing import List, Dict, Optional
 
 # Конфигурация
 VENDOR_API_KEY = "sk-or-vv-a8d6e009e2bbe09474b0679fbba83b015ff1c4f255ed76f33b48ccb1632bdc32"
 INDEX_PATH = "/data/faiss_index.bin"
 METADATA_PATH = "/data/metadata.pkl"
+QA_PAIRS_PATH = "/data/qa_pairs.xml"
 MODEL_ID = "google/gemini-flash-1.5"
 API_URL = "https://api.vsegpt.ru/v1/chat/completions"
 EMBEDDING_URL = "https://api.vsegpt.ru/v1/embeddings"
@@ -33,6 +36,8 @@ MAX_RESPONSE_LENGTH = 10000
 REQUEST_DELAY = 12
 MAX_RETRIES = 3
 USER_RATE_LIMIT = 8
+BROADCAST_INTERVAL = 3600  # 1 час в секундах
+BROADCAST_INITIAL_DELAY = 10  # Задержка перед первой рассылкой в секундах
 
 SYSTEM_PROMPT = """Ты - ассистент, анализирующий документы. Отвечай точно и информативно,
 используя только предоставленные фрагменты текста и делая оговорку: "согласно имеющейся информации". 
@@ -45,9 +50,12 @@ class AnticorruptionBot:
     def __init__(self, token: str):
         self.bot = Bot(token)
         self.index, self.metadata = self._load_faiss_index()
-        self.session = None
-        self.rate_limits = {}
+        self.qa_pairs = self._load_qa_pairs()
+        self.session: Optional[aiohttp.ClientSession] = None
+        self.rate_limits: Dict[int, List[float]] = {}
         self.bot_info = None
+        self.active_chats: set[int] = set()
+        self.broadcast_lock = asyncio.Lock()
 
     def _load_faiss_index(self) -> tuple:
         if not all(os.path.exists(p) for p in [INDEX_PATH, METADATA_PATH]):
@@ -59,12 +67,35 @@ class AnticorruptionBot:
         
         return index, metadata
 
+    def _load_qa_pairs(self) -> List[Dict[str, str]]:
+        if not os.path.exists(QA_PAIRS_PATH):
+            raise FileNotFoundError(f"Файл QA пар не найден по пути: {QA_PAIRS_PATH}")
+        
+        try:
+            tree = ET.parse(QA_PAIRS_PATH)
+            root = tree.getroot()
+            return [
+                {
+                    "question": pair.find("question").text.strip(),
+                    "answer": pair.find("answer").text.strip()
+                }
+                for pair in root.findall("pair")
+                if pair.find("question") is not None and pair.find("answer") is not None
+            ]
+        except Exception as e:
+            raise ValueError(f"Ошибка парсинга QA пар: {str(e)}")
+
     async def initialize(self):
         self.session = aiohttp.ClientSession()
         self.bot_info = await self.bot.get_me()
         logging.info(f"Бот инициализирован: @{self.bot_info.username}")
 
+    async def _track_chat(self, chat_id: int):
+        self.active_chats.add(chat_id)
+
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        await self._track_chat(update.effective_chat.id)
+        
         if self.session is None or self.session.closed or self.bot_info is None:
             await self.initialize()
         
@@ -116,6 +147,7 @@ class AnticorruptionBot:
             await self._safe_send(update, "⚠️ Произошла ошибка при обработке запроса")
 
     async def handle_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        await self._track_chat(update.effective_chat.id)
         await self._safe_send(update, "Привет! Задайте мне вопрос по антикоррупционному законодательству.")
 
     def _check_rate_limit(self, user_id: int) -> bool:
@@ -203,6 +235,41 @@ class AnticorruptionBot:
         except Exception as e:
             logging.error(f"Ошибка отправки сообщения: {str(e)}")
 
+    async def broadcast_random_qa(self, context: ContextTypes.DEFAULT_TYPE):
+        if not self.qa_pairs:
+            logging.error("Нет доступных QA пар для рассылки")
+            return
+
+        async with self.broadcast_lock:
+            pair = np.random.choice(self.qa_pairs)
+            message = f"❓ Вопрос дня:\n{pair['question']}\n\n💡 Ответ:\n{pair['answer']}"
+
+            errors = []
+            for chat_id in list(self.active_chats):
+                try:
+                    await self.bot.send_message(chat_id=chat_id, text=message)
+                    await asyncio.sleep(0.1)  # Небольшая задержка между сообщениями
+                except Exception as e:
+                    errors.append((chat_id, str(e)))
+                    logging.error(f"Ошибка рассылки в чат {chat_id}: {str(e)}")
+
+            if errors:
+                error_msg = "⚠️ Ошибки при рассылке:\n" + "\n".join(
+                    f"Чат {cid}: {err}" for cid, err in errors[:5]  # Ограничиваем количество выводимых ошибок
+                )
+                if len(errors) > 5:
+                    error_msg += f"\n...и ещё {len(errors) - 5} ошибок"
+                
+                # Отправляем ошибки в первый доступный чат (например, админу)
+                if self.active_chats:
+                    await self._safe_send_to_chat(next(iter(self.active_chats)), error_msg[:4000])
+
+    async def _safe_send_to_chat(self, chat_id: int, text: str):
+        try:
+            await self.bot.send_message(chat_id=chat_id, text=text[:MAX_RESPONSE_LENGTH])
+        except Exception as e:
+            logging.error(f"Ошибка отправки сообщения в чат {chat_id}: {str(e)}")
+
     async def shutdown(self):
         if self.session:
             await self.session.close()
@@ -211,6 +278,12 @@ async def startup(application):
     bot_instance = application.bot_data.get("bot_instance")
     if bot_instance:
         await bot_instance.initialize()
+        # Запускаем периодическую рассылку
+        application.job_queue.run_repeating(
+            bot_instance.broadcast_random_qa,
+            interval=BROADCAST_INTERVAL,
+            first=BROADCAST_INITIAL_DELAY
+        )
 
 async def shutdown(application):
     bot_instance = application.bot_data.get("bot_instance")
@@ -233,6 +306,7 @@ def main():
             overall_max_rate=40,
             overall_time_period=60
         )) \
+        .job_queue(JobQueue()) \
         .build()
 
     bot = AnticorruptionBot(TOKEN)
