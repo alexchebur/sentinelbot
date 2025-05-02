@@ -35,8 +35,11 @@ MAX_RETRIES = 3
 USER_RATE_LIMIT = 8
 
 SYSTEM_PROMPT = """Ты - ассистент, анализирующий документы. Отвечай точно и информативно,
-используя только предоставленные фрагменты текста и делая оговорку: "согласно имеющейся информации". Делай ссылки на номера пунктов, если они указаны. Если информации недостаточно,
-сообщи об этом. Запрещено указывать расширение файла (например, txt или doc)"""
+используя только предоставленные фрагменты текста и делая оговорку: "согласно имеющейся информации". 
+- Форматируй ответ простым текстом БЕЗ использования Markdown разметки
+- Делай ссылки на номера пунктов, если они указаны
+- Если информации недостаточно, сообщи об этом
+- Запрещено указывать расширение файла (например, txt или doc)"""
 
 class AnticorruptionBot:
     def __init__(self, token: str):
@@ -71,15 +74,11 @@ class AnticorruptionBot:
             message_text = update.message.text
             bot_username = self.bot_info.username
             
-            # Точное совпадение @username с границами слова
             mention_pattern = rf'@?{re.escape(bot_username)}\b'
             if not re.search(mention_pattern, message_text, re.IGNORECASE):
                 return
             
-            # Логирование для отладки
-            logging.info(f"Original text: {message_text}")
             message_text = re.sub(mention_pattern, '', message_text, flags=re.IGNORECASE).strip()
-            logging.info(f"Cleaned text: {message_text}")
             
             if not message_text:
                 await self._safe_send(update, "Какой у вас вопрос?")
@@ -116,8 +115,97 @@ class AnticorruptionBot:
             logging.error(f"Ошибка обработки: {str(e)}", exc_info=True)
             await self._safe_send(update, "⚠️ Произошла ошибка при обработке запроса")
 
-    # Остальные методы класса остаются без изменений (handle_start, _check_rate_limit, 
-    # _search_chunks, _get_embedding, _generate_response, _process_response и т.д.)
+    async def handle_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        await self._safe_send(update, "Привет! Задайте мне вопрос по антикоррупционному законодательству.")
+
+    def _check_rate_limit(self, user_id: int) -> bool:
+        now = time.time()
+        if user_id not in self.rate_limits:
+            self.rate_limits[user_id] = []
+        
+        timestamps = [ts for ts in self.rate_limits[user_id] if now - ts < 60]
+        if len(timestamps) >= USER_RATE_LIMIT:
+            return False
+        
+        self.rate_limits[user_id] = timestamps + [now]
+        return True
+
+    async def _search_chunks(self, query: str) -> List[str]:
+        embedding = await self._get_embedding(query)
+        distances, indices = self.index.search(np.array([embedding]), 5)
+        
+        results = []
+        for idx in indices[0]:
+            if idx < len(self.metadata):
+                text = self.metadata[idx].get("text", "")
+                if text:
+                    results.append(text[:1000])
+        return results
+
+    async def _get_embedding(self, text: str) -> List[float]:
+        headers = {
+            "Authorization": f"Bearer {VENDOR_API_KEY}",
+            "Content-Type": "application/json"
+        }
+        
+        payload = {
+            "model": "text-embedding-3-small",
+            "input": text
+        }
+
+        async with self.session.post(EMBEDDING_URL, json=payload, headers=headers) as response:
+            response.raise_for_status()
+            data = await response.json()
+            return data['data'][0]['embedding']
+
+    async def _generate_response(self, query: str, chunks: List[str]) -> str:
+        headers = {
+            "Authorization": f"Bearer {VENDOR_API_KEY}",
+            "Content-Type": "application/json"
+        }
+        
+        context = "\n".join([f"[Пункт {i+1}] {chunk}" for i, chunk in enumerate(chunks)])
+        prompt = f"Вопрос: {query}\nКонтекст:\n{context}"
+
+        payload = {
+            "model": MODEL_ID,
+            "messages": [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": prompt}
+            ],
+            "max_tokens": MAX_RESPONSE_LENGTH
+        }
+
+        async with self.session.post(API_URL, json=payload, headers=headers) as response:
+            response_data = await response.json()
+            raw_answer = response_data['choices'][0]['message']['content']
+            return self._clean_markdown(raw_answer)
+
+    def _clean_markdown(self, text: str) -> str:
+        markdown_patterns = [
+            r'\*\*(.*?)\*\*',    # Жирный текст
+            r'\*(.*?)\*',         # Курсив
+            r'~~(.*?)~~',         # Зачеркивание
+            r'\[(.*?)\]\(.*?\)',  # Ссылки
+            r'`{3}.*?\n',         # Блоки кода
+            r'`',                 # Инлайн код
+            r'^#+\s*',           # Заголовки
+        ]
+
+        for pattern in markdown_patterns:
+            text = re.sub(pattern, r'\1', text, flags=re.MULTILINE|re.DOTALL)
+        
+        return text.strip()
+
+    async def _safe_send(self, update: Update, text: str):
+        try:
+            await update.message.reply_text(text[:MAX_RESPONSE_LENGTH])
+        except Exception as e:
+            logging.error(f"Ошибка отправки сообщения: {str(e)}")
+
+    async def shutdown(self):
+        if self.session:
+            await self.session.close()
 
 async def startup(application):
     bot_instance = application.bot_data.get("bot_instance")
