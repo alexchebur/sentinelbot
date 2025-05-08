@@ -556,6 +556,7 @@ class AnticorruptionBot:
                     payload = {
                         "model": self.api_params["llm"]["model"],
                         "messages": messages,
+                        "response_format": {"type": "text"},
                         "max_tokens": MAX_RESPONSE_LENGTH,
                         "temperature": 0.3  # Снижаем температуру для более стабильных ответов
                     }
