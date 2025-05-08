@@ -68,7 +68,7 @@ formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(messag
 file_handler.setFormatter(formatter)
 logging.getLogger('').addHandler(file_handler)
 
-# 2. Кастомный анализатор
+# Кастомный фильтр для обрезки окончаний (должен быть идентичен тому, что использовался при создании индекса)
 class CutEndingsFilter(Filter):
     def __call__(self, tokens):
         for token in tokens:
@@ -79,17 +79,23 @@ class CutEndingsFilter(Filter):
                 token.text = text
                 yield token
 
-stopwords_list = frozenset({
-    "на", "в", "под", "к", "над", "после", "до", "посреди", 
-    "среди", "между", "тем", "самым", "это", "то", "эти", 
-    "эта", "тот", "та", "оно", "они", "она", "он"
-})
-
+# Создаем анализатор идентичный используемому при индексации
 my_analyzer = (
-    RegexTokenizer() | 
-    LowercaseFilter() | 
-    CutEndingsFilter() | 
-    StopFilter(stoplist=stopwords_list)
+    RegexTokenizer() |
+    LowercaseFilter() |
+    CutEndingsFilter() |
+    StopFilter(stoplist=frozenset({
+        "на", "в", "под", "к", "над", "после", "до", "посреди",
+        "среди", "между", "тем", "самым", "это", "то", "эти",
+        "эта", "тот", "та", "оно", "они", "она", "он"
+    }))
+)
+
+# Схема должна точно соответствовать созданной при индексации
+WHOOSH_SCHEMA = Schema(
+    path=ID(stored=True),
+    title=TEXT(stored=True),
+    content=TEXT(analyzer=my_analyzer, stored=True)
 )
 
 class APIError(Exception):
