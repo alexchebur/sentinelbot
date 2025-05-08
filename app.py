@@ -655,33 +655,34 @@ class AnticorruptionBot:
             return "К сожалению, сервис временно недоступен. Пожалуйста, попробуйте позже."
 
     def _clean_markdown(self, text: str) -> str:
-        """Очищает текст от markdown-разметки"""
-        if not text:
-            return ""
+        return text.strip()
+#"""Очищает текст от markdown-разметки"""
+        #if not text:
+            #return ""
         
-        # Паттерны для удаления markdown-разметки    
-        markdown_patterns = [
-            (r'\*\*(.*?)\*\*', r'\1'),  # Bold
-            (r'\*(.*?)\*', r'\1'),      # Italic
-            (r'__(.*?)__', r'\1'),      # Bold
-            (r'_(.*?)_', r'\1'),        # Italic
-            (r'```.*?\n'),  # Исправлено для тройных кавычек
-            (r'`'),          # Одиночная кавычка
-            (r'`{3}(.*?)`{3}', r'\1'),  # Code block
-            (r'`(.*?)`', r'\1'),        # Inline code
-            (r'~~(.*?)~~', r'\1'),      # Strikethrough
-            (r'\[(.*?)\]\((.*?)\)', r'\1'), # Links
-            (r'^#{1,6}\s+(.*)$', r'\1', re.MULTILINE), # Headers
-        ]
+        ## Паттерны для удаления markdown-разметки    
+        #markdown_patterns = [
+            #(r'\*\*(.*?)\*\*', r'\1'),  # Bold
+            #(r'\*(.*?)\*', r'\1'),      # Italic
+            #(r'__(.*?)__', r'\1'),      # Bold
+            #(r'_(.*?)_', r'\1'),        # Italic
+            #(r'```.*?\n'),  # Исправлено для тройных кавычек
+            #(r'`'),          # Одиночная кавычка
+            #(r'`{3}(.*?)`{3}', r'\1'),  # Code block
+            #(r'`(.*?)`', r'\1'),        # Inline code
+            #(r'~~(.*?)~~', r'\1'),      # Strikethrough
+            #(r'\[(.*?)\]\((.*?)\)', r'\1'), # Links
+            #(r'^#{1,6}\s+(.*)$', r'\1', re.MULTILINE), # Headers
+        #]
         
-        cleaned_text = text
-        for pattern in markdown_patterns:
-            cleaned_text = re.sub(pattern, r'\1', cleaned_text, flags=re.MULTILINE|re.DOTALL)
+        #cleaned_text = text
+        #for pattern in markdown_patterns:
+            #cleaned_text = re.sub(pattern, r'\1', cleaned_text, flags=re.MULTILINE|re.DOTALL)
         
         # Дополнительная очистка
-        cleaned_text = re.sub(r'\\([\\`*_{}[\]()#+\-.!])', r'\1', cleaned_text)  # Удаление экранирования
+        #cleaned_text = re.sub(r'\\([\\`*_{}[\]()#+\-.!])', r'\1', cleaned_text)  # Удаление экранирования
         
-        return cleaned_text.strip()
+        #return cleaned_text.strip()
 
     async def _safe_send(self, update: Update, text: str):
         """Безопасно отправляет сообщение пользователю с обработкой ошибок"""
