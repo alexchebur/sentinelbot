@@ -12,8 +12,8 @@ import json
 import xml.etree.ElementTree as ET
 from typing import Dict, List, Optional, Tuple, Any
 from whoosh import index, highlight
-from whoosh.fields import Schema, TEXT
 from whoosh.analysis import Filter, RegexTokenizer, LowercaseFilter, StopFilter
+from whoosh.fields import Schema, TEXT, ID
 from whoosh.qparser import QueryParser
 from whoosh.scoring import BM25F
 from telegram import Update, Bot, ReplyKeyboardMarkup, KeyboardButton
