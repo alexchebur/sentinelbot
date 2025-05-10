@@ -26,6 +26,7 @@ from telegram.ext import (
     filters,
     AIORateLimiter
 )
+from test import QuizHandler  # Импорт класса теста
 
 # Конфигурация
 VENDOR_API_KEY = "sk-or-vv-a8d6e009e2bbe09474b0679fbba83b015ff1c4f255ed76f33b48ccb1632bdc32"
@@ -351,7 +352,7 @@ class AnticorruptionBot:
         await self._update_chat_ids(update)
         await self._safe_send(
             update,
-            "Бот запущен! Задайте мне вопрос по антикоррупционному комплаенс группы Т Плюс."
+            "Бот запущен! Задайте мне вопрос по антикоррупционному комплаенс группы Т Плюс или введите /start_quiz для квиза."
         )
 
     def _check_rate_limit(self, user_id: int) -> bool:
@@ -727,10 +728,15 @@ def main():
 
     bot = AnticorruptionBot(TOKEN)
     application.bot_data["bot_instance"] = bot
+
+    quiz_handler = QuizHandler() #запуск класса квиза из файла test.py
+    
+
     
     application.add_handler(CommandHandler("start", bot.handle_start))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_message))
-    
+    application.add_handler(CommandHandler("start_quiz", quiz_handler.start_quiz)) #обработчик квиза
+    application.add_handler(CallbackQueryHandler(quiz_handler.handle_answer)) #обработчик квиза
     application.post_shutdown = shutdown
     
     logging.info("Бот запускается...")
