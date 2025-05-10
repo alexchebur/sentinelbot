@@ -54,13 +54,14 @@ class QuizHandler:
         data = context.user_data[user_id]
         question = data['quiz_questions'][data['current_question']]
         formatted_answers = [
-            '\n'.join(wrap(answer, width=40))  # Разбиваем текст на строки по 40 символов
+            '\n'.join(wrap(answer, width=40))  # Теперь синтаксис корректен
             for answer in question['answers']
         ]
-        
+
+        # Создаем вертикальные кнопки
         keyboard = [
-            [InlineKeyboardButton(answer, callback_data=str(idx))] 
-            for idx, answers in enumerate(formatted_answers)
+            [InlineKeyboardButton(ans, callback_data=str(idx))]
+            for idx, ans in enumerate(formatted_answers)
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
