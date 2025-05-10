@@ -196,6 +196,7 @@ class AnticorruptionBot:
             
             if self.bot_info is None:
                 self.bot_info = await self.bot.get_me()
+                asyncio.create_task(self._broadcast_qa_pairs())  # Эта строка должна остаться
                 logging.info(f"Бот инициализирован: @{self.bot_info.username}")
                 # Запускаем задачу для периодической рассылки сообщений
                 asyncio.create_task(self._broadcast_qa_pairs())
@@ -723,12 +724,13 @@ def main():
     application = ApplicationBuilder() \
         .token(TOKEN) \
         .rate_limiter(AIORateLimiter(overall_max_rate=40, overall_time_period=60)) \
+        .post_start(lambda app: asyncio.create_task(app.bot_data["bot_instance"]._broadcast_qa_pairs()))  # Добавить эту строку
         .build()
 
     bot = AnticorruptionBot(TOKEN)
     application.bot_data["bot_instance"] = bot
     # Добавьте эту строку после создания бота:
-    application.post_init = lambda app: asyncio.create_task(app.bot_data["bot_instance"].initialize())
+    #application.post_init = lambda app: asyncio.create_task(app.bot_data["bot_instance"].initialize())
     application.add_handler(CommandHandler("start", bot.handle_start))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_message))
     
