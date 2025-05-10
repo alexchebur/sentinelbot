@@ -26,7 +26,6 @@ from telegram.ext import (
     filters,
     AIORateLimiter
 )
-
 # Конфигурация
 VENDOR_API_KEY = "sk-or-vv-a8d6e009e2bbe09474b0679fbba83b015ff1c4f255ed76f33b48ccb1632bdc32"
 INDEX_PATH = "/data/faiss_index.bin"
