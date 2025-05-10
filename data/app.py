@@ -24,7 +24,8 @@ from telegram.ext import (
     MessageHandler,
     CommandHandler,
     filters,
-    AIORateLimiter
+    AIORateLimiter,
+    CallbackQueryHandler
 )
 from test import QuizHandler  # Импорт класса теста
 
