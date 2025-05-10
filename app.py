@@ -42,7 +42,7 @@ MAX_RESPONSE_LENGTH = 4096 # Уменьшено для снижения веро
 REQUEST_DELAY = 3  # Уменьшено время ожидания между запросами
 MAX_RETRIES = 1  # Увеличено количество повторных попыток
 USER_RATE_LIMIT = 8
-MESSAGE_BROADCAST_INTERVAL = 86400
+MESSAGE_BROADCAST_INTERVAL = 180
 
 SYSTEM_PROMPT = """Ты - ассистент, анализирующий документы в сфере противодействия коррупции. Отвечай точно и информативно,
 используя только предоставленные фрагменты текста и делая оговорку: "согласно имеющейся информации". 
@@ -117,6 +117,7 @@ class AnticorruptionBot:
         self.chat_ids = set()
         self.embedding_lock = asyncio.Lock()
         self.llm_lock = asyncio.Lock()
+        asyncio.create_task(self.initialize())  # Запуск инициализации при создании экземпляра
         # Кэши для уменьшения количества запросов
         self.embedding_cache = {}
         self.response_cache = {}
