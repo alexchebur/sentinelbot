@@ -18,7 +18,7 @@ class QuizHandler:
 
     def _load_questions(self):
         """Загрузка вопросов из XML-файла"""
-        path = os.path.join('data', 'qa_quiz.xml')
+        path = os.path.join('/data', 'qa_quiz.xml')
         tree = ET.parse(path)
         root = tree.getroot()
         
