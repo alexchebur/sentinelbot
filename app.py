@@ -117,7 +117,7 @@ class AnticorruptionBot:
         self.chat_ids = set()
         self.embedding_lock = asyncio.Lock()
         self.llm_lock = asyncio.Lock()
-        asyncio.create_task(self.initialize())  # Запуск инициализации при создании экземпляра
+        
         # Кэши для уменьшения количества запросов
         self.embedding_cache = {}
         self.response_cache = {}
@@ -727,7 +727,8 @@ def main():
 
     bot = AnticorruptionBot(TOKEN)
     application.bot_data["bot_instance"] = bot
-    
+    # Добавьте эту строку после создания бота:
+    application.post_init = lambda app: asyncio.create_task(app.bot_data["bot_instance"].initialize())
     application.add_handler(CommandHandler("start", bot.handle_start))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_message))
     
