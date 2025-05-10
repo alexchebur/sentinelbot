@@ -7,19 +7,25 @@ from telegram.ext import CallbackContext
 
 class QuizHandler:
     def __init__(self):
-        self.questions = self._load_questions()
         self.rank_titles = {
             0: "Новичок",
             1: "Стажёр",
             3: "Специалист",
-            6: "Эксперт",
-            9: "Мастер комплаенса"
+            6: "Комплаенс-офицер",
+            9: "Гуру комплаенса"
         }
+        self.XML_PATH = "/data/qa_quiz.xml"  # Абсолютный путь как в основном скрипте
+        self._validate_xml_path()
+        self.questions = self._load_questions()
+
+    def _validate_xml_path(self):
+        """Проверяет наличие файла"""
+        if not os.path.exists(self.XML_PATH):
+            raise FileNotFoundError(f"Файл {self.XML_PATH} не найден!")
 
     def _load_questions(self):
-        """Загрузка вопросов из XML-файла"""
-        path = os.path.join('/data', 'qa_quiz.xml')
-        tree = ET.parse(path)
+        """Загрузка вопросов"""
+        tree = ET.parse(self.XML_PATH)
         root = tree.getroot()
         
         questions = []
