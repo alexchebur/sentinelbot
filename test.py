@@ -1,31 +1,23 @@
 # test.py
+
 import os
 import random
 import xml.etree.ElementTree as ET
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import CallbackContext
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.ext import CallbackContext, ApplicationHandlerStop
 
 class QuizHandler:
     def __init__(self):
-        self.rank_titles = {
-            0: "Новичок",
-            1: "Стажёр",
-            3: "Специалист",
-            6: "Комплаенс-офицер",
-            9: "Гуру комплаенса"
-        }
-        self.XML_PATH = "/data/qa_quiz.xml"  # Абсолютный путь как в основном скрипте
-        self._validate_xml_path()
         self.questions = self._load_questions()
-
-    def _validate_xml_path(self):
-        """Проверяет наличие файла"""
-        if not os.path.exists(self.XML_PATH):
-            raise FileNotFoundError(f"Файл {self.XML_PATH} не найден!")
+        self.rank_titles = {0: "Новичок", 3: "Специалист", 6: "Эксперт", 9: "Мастер комплаенса"}
 
     def _load_questions(self):
-        """Загрузка вопросов"""
-        tree = ET.parse(self.XML_PATH)
+        """Загрузка вопросов из XML"""
+        XML_PATH = "/data/qa_quiz.xml"  # Абсолютный путь как в app.py
+        if not os.path.exists(XML_PATH):
+            raise FileNotFoundError(f"Файл {XML_PATH} не найден!")
+
+        tree = ET.parse(XML_PATH)
         root = tree.getroot()
         
         questions = []
@@ -44,40 +36,42 @@ class QuizHandler:
             })
         return questions
 
-    def start_quiz(self, update, context: CallbackContext):
-        """Начало нового теста"""
+    async def start_quiz(self, update: Update, context: CallbackContext):
+        """Асинхронный обработчик команды /start_quiz"""
         user_id = update.effective_user.id
         context.user_data[user_id] = {
             'current_question': 0,
             'score': 0,
             'quiz_questions': random.sample(self.questions, 10)
         }
-        self._send_question(update, context)
-
-    def _send_question(self, update, context):
-        """Отправка вопроса пользователю"""
+        await self._send_question(update, context)  # Добавлен await
+        
+    async def _send_question(self, update: Update, context: CallbackContext):
+        """Асинхронная отправка вопроса"""
         user_id = update.effective_user.id
         data = context.user_data[user_id]
         question = data['quiz_questions'][data['current_question']]
 
         keyboard = [
-            [InlineKeyboardButton(ans, callback_data=str(idx))]
-            for idx, ans in enumerate(question['answers'])
+            [InlineKeyboardButton(ans, callback_data=str(idx)) 
+            for idx, ans in enumerate(question['answers'])]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        context.bot.send_message(
+        # Используем await для асинхронного вызова
+        await context.bot.send_message(
             chat_id=update.effective_chat.id,
             text=f"Вопрос {data['current_question'] + 1}/10:\n{question['text']}",
             reply_markup=reply_markup
         )
 
-    def handle_answer(self, update, context):
-        """Обработка ответа пользователя"""
+    async def handle_answer(self, update: Update, context: CallbackContext):
+        """Асинхронный обработчик ответов"""
         query = update.callback_query
+        await query.answer()  # Обязательный await для обработки callback
+        
         user_id = query.from_user.id
         data = context.user_data.get(user_id)
-
         if not data or data['current_question'] >= 10:
             return
 
@@ -93,12 +87,12 @@ class QuizHandler:
         query.answer()
 
         if data['current_question'] < 10:
-            self._send_question(update, context)
+            await self._send_question(update, context)  # Добавлен await
         else:
-            self._finish_quiz(update, context)
+            await self._finish_quiz(update, context)    # Добавлен await
 
-    def _finish_quiz(self, update, context):
-        """Завершение теста и вывод результатов"""
+    async def _finish_quiz(self, update: Update, context: CallbackContext):
+        """Асинхронное завершение теста"""
         user_id = update.effective_user.id
         data = context.user_data[user_id]
         score = data['score']
@@ -110,11 +104,9 @@ class QuizHandler:
                 rank = self.rank_titles[key]
                 break
 
-        context.bot.send_message(
+        await context.bot.send_message(  # Добавлен await
             chat_id=update.effective_chat.id,
-            text=f"Тест завершен!\n\n"
-                 f"Правильных ответов: {score}/10\n"
-                 f"Ваше звание: {rank}"
+            text=f"Тест завершен!\nПравильных ответов: {score}/10\nВаше звание: {rank}"
         )
         del context.user_data[user_id]
 
