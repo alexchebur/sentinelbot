@@ -351,7 +351,7 @@ class AnticorruptionBot:
         await self._update_chat_ids(update)
         await self._safe_send(
             update,
-            "Привет! Задайте мне вопрос по антикоррупционному законодательству."
+            "Бот запущен! Задайте мне вопрос по антикоррупционному комплаенс группы Т Плюс."
         )
 
     def _check_rate_limit(self, user_id: int) -> bool:
