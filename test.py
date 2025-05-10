@@ -5,6 +5,8 @@ import random
 import xml.etree.ElementTree as ET
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import CallbackContext, ApplicationHandlerStop
+from textwrap import wrap  # Добавьте импорт
+
 
 class QuizHandler:
     def __init__(self):
@@ -51,10 +53,14 @@ class QuizHandler:
         user_id = update.effective_user.id
         data = context.user_data[user_id]
         question = data['quiz_questions'][data['current_question']]
-
+        formatted_answers = [
+            '\n'.join(wrap(answer, width=40))  # Разбиваем текст на строки по 40 символов
+            for answer in question['answers']
+        ]
+        
         keyboard = [
             [InlineKeyboardButton(answer, callback_data=str(idx))] 
-            for idx, answer in enumerate(question['answers'])]
+            for idx, answers in enumerate(formatted_answers)
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
