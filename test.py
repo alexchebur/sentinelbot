@@ -53,7 +53,7 @@ class QuizHandler:
         question = data['quiz_questions'][data['current_question']]
 
         keyboard = [
-            [InlineKeyboardButton(answer, callback_data=str(idx)) 
+            [InlineKeyboardButton(answer, callback_data=str(idx))] 
             for idx, answer in enumerate(question['answers'])]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
