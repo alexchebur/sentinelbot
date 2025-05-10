@@ -53,16 +53,17 @@ class QuizHandler:
         question = data['quiz_questions'][data['current_question']]
 
         keyboard = [
-            [InlineKeyboardButton(ans, callback_data=str(idx)) 
-            for idx, ans in enumerate(question['answers'])]
+            [InlineKeyboardButton(answer, callback_data=str(idx)) 
+            for idx, answer in enumerate(question['answers'])]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
         # Используем await для асинхронного вызова
         await context.bot.send_message(
             chat_id=update.effective_chat.id,
-            text=f"Вопрос {data['current_question'] + 1}/10:\n{question['text']}",
-            reply_markup=reply_markup
+            text=f"📝 *Вопрос {data['current_question'] + 1}/10:*\n\n{question['text']}",
+            reply_markup=reply_markup,
+            parse_mode="Markdown"
         )
 
     async def handle_answer(self, update: Update, context: CallbackContext):
