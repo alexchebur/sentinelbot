@@ -11,9 +11,9 @@ from textwrap import wrap  # Добавьте импорт
 class FileHandler:
     async def download_file(self, update: Update, context: CallbackContext):
         """Обработчик команды /download для скачивания PDF"""
-        FILE_PATH = "/data/ACP.pdf"  # Абсолютный путь как в примере с QuizHandler
+        LOAD_PATH = "/data/ACP.pdf"  # Абсолютный путь как в примере с QuizHandler
         
-        if not os.path.exists(FILE_PATH):
+        if not os.path.exists(LOAD_PATH):
             await context.bot.send_message(
                 chat_id=update.effective_chat.id,
                 text="❌ Файл ACP.pdf не найден на сервере"
@@ -21,7 +21,7 @@ class FileHandler:
             return
 
         try:
-            with open(FILE_PATH, 'rb') as file:
+            with open(LOAD_PATH, 'rb') as file:
                 await context.bot.send_document(
                     chat_id=update.effective_chat.id,
                     document=file,
