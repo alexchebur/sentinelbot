@@ -4,8 +4,42 @@ import os
 import random
 import xml.etree.ElementTree as ET
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
-from telegram.ext import CallbackContext, ApplicationHandlerStop
+from telegram.ext import CallbackContext, ApplicationHandlerStop, CommandHandler
 from textwrap import wrap  # Добавьте импорт
+
+
+class FileHandler:
+    async def download_file(self, update: Update, context: CallbackContext):
+        """Обработчик команды /download для скачивания PDF"""
+        FILE_PATH = "/data/ACP.pdf"  # Абсолютный путь как в примере с QuizHandler
+        
+        if not os.path.exists(FILE_PATH):
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text="❌ Файл ACP.pdf не найден на сервере"
+            )
+            return
+
+        try:
+            with open(FILE_PATH, 'rb') as file:
+                await context.bot.send_document(
+                    chat_id=update.effective_chat.id,
+                    document=file,
+                    filename="ACP.pdf",
+                    caption="Антикоррупционная Политика.pdf 📄"
+                )
+        except Exception as e:
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text=f"⚠️ Произошла ошибка при загрузке файла: {str(e)}"
+            )
+
+# Пример использования в основном скрипте бота:
+# from test import FileHandler
+# file_handler = FileHandler()
+
+# Добавьте обработчик в ваше приложение:
+# application.add_handler(CommandHandler('download', file_handler.download_file))
 
 
 class QuizHandler:
