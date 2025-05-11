@@ -27,7 +27,7 @@ from telegram.ext import (
     AIORateLimiter,
     CallbackQueryHandler
 )
-from test import QuizHandler  # Импорт класса теста
+from test import FileHandler, QuizHandler  # Импорт класса теста и скачивания файла pdf
 
 # Конфигурация
 VENDOR_API_KEY = "sk-or-vv-a8d6e009e2bbe09474b0679fbba83b015ff1c4f255ed76f33b48ccb1632bdc32"
@@ -731,12 +731,14 @@ def main():
     application.bot_data["bot_instance"] = bot
 
     quiz_handler = QuizHandler() #запуск класса квиза из файла test.py
+    file_handler = FileHandler()
     
 
     
     application.add_handler(CommandHandler("start", bot.handle_start))
     application.add_handler(CommandHandler("start_quiz", quiz_handler.start_quiz)) #обработчик квиза
     application.add_handler(CallbackQueryHandler(quiz_handler.handle_answer)) #обработчик квиза
+    application.add_handler(CommandHandler('download', file_handler.download_file)) #обработчик скачивания файла
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_message))
 
     application.post_shutdown = shutdown
