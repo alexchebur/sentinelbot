@@ -737,7 +737,7 @@ def main():
     
     application.add_handler(CommandHandler("start", bot.handle_start))
     application.add_handler(CommandHandler('download', file_handler.download_file)) #обработчик скачивания файла
-    application.add_handler(CommandHandler("start_quiz", quiz_handler.start_quiz)) #обработчик квиза
+    application.add_handler(CommandHandler("start_quiz", quiz_handler.start_quiz, filters=filters.ChatType.PRIVATE)) #обработчик квиза
     application.add_handler(CallbackQueryHandler(quiz_handler.handle_answer)) #обработчик квиза
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_message))
 
