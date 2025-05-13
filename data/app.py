@@ -213,6 +213,19 @@ class AnticorruptionBot:
                     pass
                 self.session = None
 
+    # Новый метод в классе AnticorruptionBot
+    async def hotline(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработчик команды /hotline"""
+        message = (
+            "Сообщения на Горячую линию «Т Плюс» можно отправить:\n\n"
+            "📞 По телефону: 8 (800) 700-0606\n"
+            "📧 На email: hotline@tplusgroup.ru\n"
+            "🌐 Через форму на сайте: tplusgroup.ru/hotline\n"
+            "📫 Почтой по адресу: Московская область, г.о. Красногорск, "
+            "тер. автодороги «Балтия», км 26-й, д.5, стр. 3, офис 506"
+        )
+        await self._safe_send(update, message)
+    
     async def _broadcast_qa_pairs(self):
         """Периодически рассылает случайные пары вопрос-ответ во все чаты."""
         while True:
@@ -739,9 +752,10 @@ def main():
     application.add_handler(CommandHandler("start", bot.handle_start))
     application.add_handler(CommandHandler('download', file_handler.download_file)) #обработчик скачивания файла
     application.add_handler(CommandHandler("start_quiz", quiz_handler.start_quiz, filters=filters.ChatType.PRIVATE)) #обработчик квиза
+    application.add_handler(CommandHandler("hotline", bot.hotline, filters=filters.ChatType.PRIVATE))  # обработчик контактов горячей линии
     application.add_handler(CallbackQueryHandler(quiz_handler.handle_answer)) #обработчик квиза
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, bot.handle_message))
-
+    
     application.post_shutdown = shutdown
     
     logging.info("Бот запускается...")
